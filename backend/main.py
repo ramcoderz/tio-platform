@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.api.router import api_router
+from backend.api.auth import router as auth_router
 from backend.config.settings import get_settings
 from backend.db.session import init_db
 from backend.websocket.chat_socket import websocket_router
@@ -28,17 +29,17 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    print("Starting up TiO Backend...")
+    logger.info("Starting up TiO Backend...")
     try:
         Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
         Path(settings.chroma_dir).mkdir(parents=True, exist_ok=True)
-        print(f"Directories verified: {settings.upload_dir}, {settings.chroma_dir}")
+        logger.info(f"Directories verified: {settings.upload_dir}, {settings.chroma_dir}")
         await init_db()
-        print("Database initialized successfully.")
+        logger.info("Database initialized successfully.")
         
         # Load vector store data
         await asyncio.to_thread(initialize_vectorstore)
-        print("Vector store initialized.")
+        logger.info("Vector store initialized.")
         
         # Start background tasks
         asyncio.create_task(auto_cleanup_worker())
@@ -51,12 +52,13 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8000", "http://127.0.0.1:8000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 app.include_router(api_router, prefix="/api")
+app.include_router(auth_router, prefix="/api/auth")
 app.include_router(websocket_router)
 
 frontend_dir = Path(__file__).resolve().parents[1] / "frontend"

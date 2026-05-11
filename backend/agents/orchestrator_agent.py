@@ -5,6 +5,7 @@ from backend.config.settings import get_settings
 from backend.vectorstore.service import async_retrieve
 from backend.llm.profiles import get_profile
 from backend.models.entities import Conversation, Chatbot
+from backend.rag.safety import sanitize_input, sanitize_output
 import asyncio
 
 settings = get_settings()
@@ -35,6 +36,7 @@ async def run_orchestration(
     domain: str | None = None,
     profile: str | None = None
 ) -> dict:
+    query = sanitize_input(query)
     chatbot = await _get_chatbot_details(db, chatbot_id, session_id)
     effective_chatbot_id = chatbot.id if chatbot else None
     
@@ -64,6 +66,7 @@ TONE: {bp.tone}
     prompt += "ASSISTANT: "
     
     answer = await ollama_client.generate(prompt, model=settings.ollama_model)
+    answer = sanitize_output(answer)
     
     return {
         "answer": answer,
@@ -80,6 +83,7 @@ async def run_orchestration_stream(
     chatbot_id: int | None = None,
     session_id: str | None = None
 ):
+    query = sanitize_input(query)
     chatbot = await _get_chatbot_details(db, chatbot_id, session_id)
     effective_chatbot_id = chatbot.id if chatbot else None
     

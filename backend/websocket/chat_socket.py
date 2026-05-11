@@ -2,6 +2,9 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from backend.agents.orchestrator_agent import run_orchestration_stream
 from backend.db.session import SessionLocal
 from backend.memory.service import get_or_create_conversation, get_conversation_by_session, add_message, get_all_history
+from backend.rag.safety import sanitize_input
+from backend.models.entities import Conversation
+from sqlalchemy import select
 import json
 import logging
 
@@ -19,14 +22,21 @@ async def chat_socket(websocket: WebSocket, session_id: str):
         while True:
             raw_data = await websocket.receive_text()
             data = json.loads(raw_data)
-            message = data.get("message", "")
+            message = sanitize_input(data.get("message", ""))
             chatbot_id = data.get("chatbot_id")
+            
+            if "[SECURITY ALERT]" in message:
+                await websocket.send_json({"error": "Message rejected for security reasons."})
+                continue
             
             async with SessionLocal() as db:
                 if chatbot_id:
                     conv = await get_or_create_conversation(db, session_id, chatbot_id)
                 else:
-                    conv = await get_conversation_by_session(db, session_id)
+                    # Try to find recent conversation for this session
+                    # This is a fallback; usually chatbot_id is provided
+                    stmt = select(Conversation).where(Conversation.session_id == session_id).order_by(Conversation.created_at.desc())
+                    conv = (await db.execute(stmt)).scalars().first()
                 
                 if not conv:
                     await websocket.send_json({"error": "No active conversation found. Please provide a chatbot_id."})

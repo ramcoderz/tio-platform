@@ -1,41 +1,24 @@
-# TiO Project Status
-## ✅ Completed Core Features (MVP)
-- **Unified Ingestion Engine**: Support for PDFs, Docx, TXT, and Web Scraping.
-- **Hybrid RAG Pipeline**: FAISS + BM25 with RRF fusion and reranking.
-- **Local-First Orchestration**: Asynchronous streaming via Ollama (llama3).
-- **Privacy-Aware Architecture**: Multi-tenant data isolation and session management.
-- **Modern Conversational UI**: Real-time streaming with citation management and behavior profiles.
-- **Admin Dashboard**: Real-time stats and document management interface.
+# TiO: The Refined MVP
+## ✅ Core MVP Status
+- [x] **Website Scraping**: Automated discovery and semantic extraction.
+- [x] **PDF/Doc Ingestion**: Robust parsing for multi-format knowledge bases.
+- [x] **Domain Detection**: Automated business context identification.
+- [x] **Behavior Profiles**: Domain-specific tone and creativity steering.
+- [x] **Hybrid RAG**: High-precision Vector + Keyword retrieval.
+- [x] **Citations**: Source-backed responses with preview links.
+- [x] **Isolated Chat History**: Secure, session-based persistence.
+- [x] **Chatbot Creation Flow**: 3-step wizard (Configure -> Ingest -> Preview).
+- [x] **Simple Admin Panel**: Global overview of assets and performance.
+- [x] **Lightweight Analytics**: Real-time stats on chats, messages, and docs.
+- [x] **Workflow-Aware Prompts**: Context-sensitive system instructions per domain.
+- [x] **8 Core Skills**:
+    1. 🔍 Semantic Retrieval
+    2. 🌐 Web Discovery
+    3. 📄 Document Synthesis
+    4. 🎭 Domain Adaptation
+    5. 📍 Source Grounding
+    6. ⚡ Real-time Streaming
+    7. 🔒 Data Isolation
+    8. 🧹 Auto-Cleanup Lifecycle
 
-# Feature Backlog (Post-Finalization)
-
-The following features have been removed to focus on the core RAG and Chatbot system. They are preserved here for re-implementation after the original project finalization.
-
-### 1. Enterprise Audit & Security
-- **Audit Logging**: Full tracking of system activities, user actions, and security events.
-- **Role-Based Access Control (RBAC)**: Fine-grained permissions for Admins, Users, and Viewers.
-- **Activity Feeds**: Real-time visualization of system intelligence and operational logs.
-
-### 2. Project & Workspace Management
-- **Project Linking**: Ability to group documents and chat sessions into distinct projects.
-- **Workspace Navigation**: Advanced sidebar categorization for projects and teams.
-- **Linked Assets**: Direct mapping between projects, documents, and specific agent workflows.
-
-### 3. Advanced Memory & Analytics
-- **Memory Intelligence Page**: Visualization of session entities, extracted metadata, and long-term context.
-- **Inference Metrics**: Tracking and reporting of model performance, latency, and token usage.
-- **GraphRAG-lite Relationships**: Semantic mapping of contradictions, supports, and relations between documents.
-
-### 4. Task Orchestration
-- **Action Item Extraction**: Automatically identifying tasks and owners from conversation transcripts.
-- **Task Management Page**: A dedicated interface for tracking, completing, and managing action items.
-- **Deadline Monitoring**: Integration of time-sensitive context into the RAG pipeline.
-
-### 5. Specialized Agent Clusters
-- **Research Summarizer**: Deep multi-paper synthesis.
-- **Architecture Analyzer**: Technical dependency mapping.
-- **Semantic Comparator**: Side-by-side document contrast analysis.
-- **OCR Cleanup Assistant**: Image-to-text refinement specialized agents.
-
-### 6. Deferred Features
-- **Re-implement Marketplace/Dashboard**: Integration of module marketplace and high-level analytics dashboard.
+*Focus: The leanest, fastest, and most reliable context-aware chatbot builder.*

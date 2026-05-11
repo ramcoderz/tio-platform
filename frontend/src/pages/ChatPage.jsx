@@ -40,12 +40,20 @@ export default function ChatPage() {
   }, [chatbotId]);
 
   // WebSocket Connection
-  const connectWS = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host === 'localhost:5173' ? 'localhost:8000' : window.location.host;
-    const ws = new WebSocket(`${protocol}//${host}/ws/chat/${sessionId}`);
-    wsRef.current = ws;
+    const reconnectAttempts = useRef(0);
+    const maxReconnectAttempts = 5;
+
+    const connectWS = useCallback(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) return;
+      if (reconnectAttempts.current >= maxReconnectAttempts) {
+        console.error("Max WS reconnect attempts reached.");
+        return;
+      }
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host === 'localhost:5173' ? 'localhost:8888' : window.location.host;
+      const ws = new WebSocket(`${protocol}//${host}/ws/chat/${sessionId}`);
+      wsRef.current = ws;
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -75,8 +83,15 @@ export default function ChatPage() {
       }
     };
 
+    ws.onopen = () => {
+      reconnectAttempts.current = 0;
+      console.log("WS Connected");
+    };
+
     ws.onclose = () => {
-      setTimeout(connectWS, 3000);
+      reconnectAttempts.current++;
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 10000);
+      setTimeout(connectWS, delay);
     };
   }, [sessionId, setMessages]);
 
@@ -96,9 +111,19 @@ export default function ChatPage() {
     }
   }, [chatbotId]);
 
+  const [autoScroll, setAutoScroll] = useState(true);
+  
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, isTyping]);
+    if (autoScroll) {
+      chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, isTyping, autoScroll]);
+
+  const handleScroll = (e) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.target;
+    const isAtBottom = scrollHeight - scrollTop <= clientHeight + 100;
+    setAutoScroll(isAtBottom);
+  };
 
   const sendMessage = async (text = input) => {
     const finalInput = text.trim();
@@ -155,7 +180,11 @@ export default function ChatPage() {
           </div>
         </header>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: '40px 0' }} className="custom-scrollbar">
+        <div 
+          style={{ flex: 1, overflowY: 'auto', padding: '40px 0' }} 
+          className="custom-scrollbar"
+          onScroll={handleScroll}
+        >
           <div style={{ maxWidth: '800px', margin: '0 auto', padding: '0 24px' }}>
             {messages.length === 0 && (
               <div style={{ textAlign: 'center', marginTop: '10vh' }}>

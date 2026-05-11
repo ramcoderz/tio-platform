@@ -75,15 +75,21 @@ async def delete_chatbot(chatbot_id: int, db: AsyncSession = Depends(get_db)):
     if not chatbot:
         raise HTTPException(status_code=404, detail="Chatbot not found")
     
-    # Cleanup related data
-    await db.execute(delete(UploadedDocument).where(UploadedDocument.chatbot_id == chatbot_id))
-    await db.execute(delete(Conversation).where(Conversation.chatbot_id == chatbot_id))
+    # 1. Physical File Cleanup
+    stmt = select(UploadedDocument).where(UploadedDocument.chatbot_id == chatbot_id)
+    docs = (await db.execute(stmt)).scalars().all()
+    for d in docs:
+        if d.storage_path and os.path.exists(d.storage_path):
+            try: os.remove(d.storage_path)
+            except: pass
     
-    # Cleanup vectors
+    # 2. Vector Cleanup
     await asyncio.to_thread(delete_chatbot_vectors, chatbot_id)
     
+    # 3. Database Cleanup (Cascades will handle related rows)
     await db.delete(chatbot)
     await db.commit()
+    
     return {"status": "deleted"}
 
 # --- Ingestion ---

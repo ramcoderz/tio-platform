@@ -4,7 +4,12 @@ from backend.models.entities import Conversation, EmbeddingMetadata, Message, Se
 
 
 async def get_or_create_conversation(db: AsyncSession, session_id: str, chatbot_id: int) -> Conversation:
-    row = (await db.execute(select(Conversation).where(Conversation.session_id == session_id))).scalar_one_or_none()
+    row = (await db.execute(
+        select(Conversation).where(
+            Conversation.session_id == session_id, 
+            Conversation.chatbot_id == chatbot_id
+        )
+    )).scalar_one_or_none()
     if row:
         return row
     row = Conversation(session_id=session_id, chatbot_id=chatbot_id)
@@ -14,8 +19,13 @@ async def get_or_create_conversation(db: AsyncSession, session_id: str, chatbot_
     return row
 
 
-async def get_conversation_by_session(db: AsyncSession, session_id: str) -> Conversation | None:
-    return (await db.execute(select(Conversation).where(Conversation.session_id == session_id))).scalar_one_or_none()
+async def get_conversation_by_session(db: AsyncSession, session_id: str, chatbot_id: int) -> Conversation | None:
+    return (await db.execute(
+        select(Conversation).where(
+            Conversation.session_id == session_id,
+            Conversation.chatbot_id == chatbot_id
+        )
+    )).scalar_one_or_none()
 
 
 async def add_message(db: AsyncSession, conversation_id: int, role: str, content: str, citations: dict = None, confidence: float = 0.0):

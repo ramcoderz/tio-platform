@@ -112,6 +112,16 @@ async def ingest_website(chatbot_id: int, url: str):
             
             all_text = ""
             for page_url in pages:
+                # Deduplication check
+                page_stmt = select(UploadedDocument).where(
+                    UploadedDocument.chatbot_id == chatbot_id,
+                    UploadedDocument.source_path == page_url
+                )
+                existing_page = (await db.execute(page_stmt)).scalar_one_or_none()
+                if existing_page:
+                    logger.info(f"Skipping already ingested page: {page_url}")
+                    continue
+
                 content = await scraper.extract_content(page_url)
                 if not content: continue
                 

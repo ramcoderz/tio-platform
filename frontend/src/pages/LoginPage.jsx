@@ -19,21 +19,13 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      // OAuth2 requires form-encoded body
-      const formData = new FormData();
-      formData.append('username', username);
-      formData.append('password', password);
-
-      const res = await fetch('/api/auth/login', { method: 'POST', body: formData });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || 'Invalid credentials');
-      }
-      const { access_token } = await res.json();
+      const { access_token, user: loggedUser } = await api('/auth/login', { 
+        method: 'POST', 
+        body: JSON.stringify({ username, password }) 
+      });
+      
       localStorage.setItem('token', access_token);
-
-      const me = await api('/auth/me');
-      setUser(me);
+      setUser(loggedUser);
       navigate('/');
     } catch (err) {
       setError(err.message || 'Connection error');

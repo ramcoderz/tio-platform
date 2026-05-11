@@ -18,8 +18,9 @@ export default function RegisterPage() {
     setError('');
     setLoading(true);
     try {
-      await api(`/auth/register?username=${encodeURIComponent(username)}&email=${encodeURIComponent(email)}&password=${encodeURIComponent(password)}`, {
-        method: 'POST'
+      await api('/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ username, email, password })
       });
       navigate('/login');
     } catch (err) {
