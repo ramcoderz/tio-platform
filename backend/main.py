@@ -12,7 +12,16 @@ from backend.config.settings import get_settings
 from backend.db.session import init_db
 from backend.websocket.chat_socket import websocket_router
 from backend.tasks.document_cleanup import auto_cleanup_worker
+from backend.vectorstore.service import initialize_vectorstore
 import asyncio
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -26,6 +35,10 @@ async def lifespan(_: FastAPI):
         print(f"Directories verified: {settings.upload_dir}, {settings.chroma_dir}")
         await init_db()
         print("Database initialized successfully.")
+        
+        # Load vector store data
+        await asyncio.to_thread(initialize_vectorstore)
+        print("Vector store initialized.")
         
         # Start background tasks
         asyncio.create_task(auto_cleanup_worker())

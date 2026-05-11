@@ -2,6 +2,9 @@ import httpx
 import json
 import asyncio
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 from backend.config.settings import get_settings
 
 class OllamaClient:
@@ -100,11 +103,11 @@ class OllamaClient:
 
         url = f"{self.base_url}/api/generate"
         payload = {"model": model, "prompt": prompt, "stream": True}
-        print(f"DEBUG: Ollama generate_stream URL: {url}, Model: {model}")
+        logger.debug(f"Ollama generate_stream URL: {url}, Model: {model}")
 
         try:
             async with self.client.stream("POST", url, json=payload) as response:
-                print(f"DEBUG: Ollama response status: {response.status_code}")
+                logger.debug(f"Ollama response status: {response.status_code}")
                 if response.status_code == 404:
                     yield f"ERROR: Model '{model}' not found in Ollama. Please run 'ollama pull {model}'."
                     return

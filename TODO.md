@@ -1,4 +1,13 @@
-# TiO Feature Backlog (Post-Finalization)
+# TiO Project Status
+## ✅ Completed Core Features (MVP)
+- **Unified Ingestion Engine**: Support for PDFs, Docx, TXT, and Web Scraping.
+- **Hybrid RAG Pipeline**: FAISS + BM25 with RRF fusion and reranking.
+- **Local-First Orchestration**: Asynchronous streaming via Ollama (llama3).
+- **Privacy-Aware Architecture**: Multi-tenant data isolation and session management.
+- **Modern Conversational UI**: Real-time streaming with citation management and behavior profiles.
+- **Admin Dashboard**: Real-time stats and document management interface.
+
+# Feature Backlog (Post-Finalization)
 
 The following features have been removed to focus on the core RAG and Chatbot system. They are preserved here for re-implementation after the original project finalization.
 

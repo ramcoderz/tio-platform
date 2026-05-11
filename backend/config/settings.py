@@ -14,13 +14,13 @@ class Settings(BaseSettings):
     chroma_dir: str = "data/chroma"
     embedding_model: str = "all-MiniLM-L6-v2"
     top_k: int = 5
-    chunk_size: int = 900
-    chunk_overlap: int = 120
+    chunk_size: int = 1000
+    chunk_overlap: int = 150
     llm_provider: str = "ollama"
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3"
     openrouter_model: str = "meta-llama/llama-3.1-8b-instruct"
-    openrouter_api_key: str = "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"
+    openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     gemini_model: str = "gemini-1.5-flash"
     gemini_api_key: str = ""
