@@ -1,16 +1,20 @@
-# Python
+# ========================================================
+# TiO Project — Hardened Gitignore for Production
+# ========================================================
+
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
 env/
+.venv
+venv/
+ENV/
 build/
 develop-eggs/
 dist/
-downloads/
-eggs/
-.eggs/
 lib/
 lib64/
 parts/
@@ -20,37 +24,76 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.pytest_cache/
 
-# Database
+# --- Database & Storage (CRITICAL) ---
 *.db
+*.sqlite
 *.db-shm
 *.db-wal
+data/
+uploads/
+vector_db/
+chroma/
+vector_cache/
+models/
+cache/
+temp/
+scratch/
+brain/
+.brain/
+.system_generated/
 
-# Environment — never commit secrets
+# --- Environment & Secrets (NEVER PUSH) ---
 .env
 .env.local
-.venv
-venv/
-ENV/
+frontend/.env
+frontend/.env.local
+secrets.json
+config.local.json
+*.pem
+*.key
 
-# Logs
+# --- Node / Frontend ---
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+.next/
+out/
+.vercel
+
+# --- Logs ---
 *.log
+logs/
 server_error.log
 server_output.log
 error.log
 output.log
 
-# Frontend build artifacts
-frontend/node_modules/
-frontend/dist/
-frontend/.env
-frontend/.env.local
+# --- Personal / Development Junk ---
+COLLEGE_REPORT.md
+college_report/
+TASKS.md
+tasks/
+todo/
+TODO.md
+planning/
+notes/
+drafts/
+reports/
+*.pdf
+*.docx
+*.pptx
+screenshots/
+recordings/
+*.mp4
+*.png
+*.jpg
+*.jpeg
+*.gif
 
-# Project data — user-generated, not source code
-data/
-scratch/
-
-# IDE & editor
+# --- IDE & System ---
 .gemini/
 .antigravity/
 .cursor/
@@ -58,24 +101,6 @@ scratch/
 .idea/
 *.swp
 *.swo
-
-# OS
 .DS_Store
 Thumbs.db
 desktop.ini
-
-# Personal / dev-only files — not for public repo
-TASKS.md
-RUN_GUIDE.md
-TODO.md
-final_report.md
-college_project_report.md
-COLLEGE_REPORT.md
-REPORT.md
-*.pdf
-*.docx
-uploads/
-vector_cache/
-models/
-.brain/
-.system_generated/

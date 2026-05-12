@@ -16,12 +16,14 @@ from backend.tasks.document_cleanup import auto_cleanup_worker
 from backend.vectorstore.service import initialize_vectorstore
 import asyncio
 import logging
+from backend.utils.logging_collector import setup_admin_logging
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+setup_admin_logging()
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
@@ -69,7 +71,9 @@ app.include_router(api_router, prefix="/api")
 app.include_router(auth_router, prefix="/api/auth")
 
 from backend.api.export import export_router
+from backend.api.admin import router as admin_router
 app.include_router(export_router, prefix="/api")
+app.include_router(admin_router, prefix="/api/internal")
 
 app.include_router(websocket_router)
 

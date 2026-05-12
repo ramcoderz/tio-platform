@@ -156,7 +156,7 @@ export default function AppShell({ children }) {
 
       {/* Bottom Section */}
       <div style={{ borderTop: '1px solid var(--border-light)', padding: collapsed ? '12px 8px' : '12px 12px' }}>
-        {BOTTOM_ITEMS.map(item => renderNavItem(item, location.pathname === item.path))}
+        {BOTTOM_ITEMS.filter(item => item.label !== 'Admin' || user?.role === 'admin').map(item => renderNavItem(item, location.pathname === item.path))}
 
         {/* Theme Toggle */}
         <button

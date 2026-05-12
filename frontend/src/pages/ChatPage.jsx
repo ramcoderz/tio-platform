@@ -135,7 +135,55 @@ export default function ChatPage() {
     }
   };
 
-  const handleKeyDown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      if (skillsOpen) {
+        // If commands are open, Enter selects the first or active one
+        // For simplicity, we'll just send the current input if no selection logic
+        e.preventDefault();
+        sendMessage();
+      } else {
+        e.preventDefault();
+        sendMessage();
+      }
+    }
+    if (e.key === 'Escape') setSkillsOpen(false);
+  };
+
+  const handleInputChange = (e) => {
+    const val = e.target.value;
+    setInput(val);
+    if (val.startsWith('/')) {
+      setSkillsOpen(true);
+    } else {
+      setSkillsOpen(false);
+    }
+  };
+
+  // Upload trigger
+  const triggerUpload = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = true;
+    input.onchange = async (e) => {
+      const files = Array.from(e.target.files);
+      for (const file of files) {
+        const formData = new FormData();
+        formData.append('file', file);
+        setMessages(prev => [...prev, { role: 'assistant', content: `📤 Uploading ${file.name}...`, _uploading: true }]);
+        try {
+          await api(`/chatbots/${chatbotId}/upload`, { method: 'POST', body: formData, isFormData: true });
+          setMessages(prev => {
+            const f = prev.filter(m => m.content !== `📤 Uploading ${file.name}...`);
+            return [...f, { role: 'assistant', content: `✅ Successfully ingested ${file.name}.` }];
+          });
+        } catch {
+          setMessages(prev => [...prev, { role: 'assistant', content: `❌ Failed to upload ${file.name}.` }]);
+        }
+      }
+    };
+    input.click();
+  };
 
   // Voice
   const startListening = () => {
@@ -302,34 +350,47 @@ export default function ChatPage() {
               background: 'var(--bg-card)', border: '1px solid var(--border)',
               borderRadius: 'var(--radius-xl)', padding: '6px 6px 6px 8px'
             }}>
-              {/* Plus / Skills */}
+              {/* Attachment / Upload */}
               <div style={{ position: 'relative' }}>
                 <button
-                  onClick={() => setSkillsOpen(!skillsOpen)}
+                  onClick={triggerUpload}
                   style={{
                     width: '36px', height: '36px', borderRadius: 'var(--radius-sm)',
-                    background: skillsOpen ? 'var(--accent)' : 'rgba(255,255,255,0.04)',
-                    color: skillsOpen ? '#050816' : 'var(--text-muted)',
+                    background: 'rgba(255,255,255,0.04)',
+                    color: 'var(--text-muted)',
                     display: 'flex', alignItems: 'center', justifyContent: 'center'
                   }}
                 >
-                  <Plus size={18} style={{ transform: skillsOpen ? 'rotate(45deg)' : 'none', transition: 'transform 0.2s' }} />
+                  <Plus size={18} />
                 </button>
-                <AnimatePresence>
-                  {skillsOpen && <SkillsMenu domain={domain} onSelect={executeSkill} onClose={() => setSkillsOpen(false)} />}
-                </AnimatePresence>
               </div>
 
-              <textarea
-                ref={textareaRef} rows={1} value={input}
-                onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown}
-                placeholder="Ask anything..."
-                style={{
-                  flex: 1, background: 'transparent', border: 'none', outline: 'none',
-                  color: '#fff', fontSize: '14px', padding: '8px 4px', resize: 'none',
-                  lineHeight: '1.5', maxHeight: '120px'
-                }}
-              />
+              <div style={{ flex: 1, position: 'relative' }}>
+                <textarea
+                  ref={textareaRef} rows={1} value={input}
+                  onChange={handleInputChange} onKeyDown={handleKeyDown}
+                  placeholder="Ask anything or type / for skills..."
+                  style={{
+                    width: '100%', background: 'transparent', border: 'none', outline: 'none',
+                    color: '#fff', fontSize: '14px', padding: '8px 4px', resize: 'none',
+                    lineHeight: '1.5', maxHeight: '120px'
+                  }}
+                />
+                <AnimatePresence>
+                  {skillsOpen && (
+                    <div style={{ position: 'absolute', bottom: '100%', left: 0, marginBottom: '12px' }}>
+                      <SkillsMenu 
+                        domain={domain} 
+                        onSelect={(id) => {
+                          executeSkill(id);
+                          setInput('');
+                        }} 
+                        onClose={() => setSkillsOpen(false)} 
+                      />
+                    </div>
+                  )}
+                </AnimatePresence>
+              </div>
 
               {/* Mic */}
               <button

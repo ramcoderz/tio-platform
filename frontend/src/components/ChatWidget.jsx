@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { MessageSquare, X, Send, Bot, Sparkles, Zap, ChevronDown } from "lucide-react";
+import { MessageSquare, X, Send, Bot, Sparkles, Zap, ChevronDown, Plus } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import SkillsMenu from "./SkillsMenu";
 
 // Domain-specific quick actions surfaced in the widget
 const DOMAIN_QUICK_ACTIONS = {
@@ -100,6 +101,7 @@ export default function ChatWidget({
   const [isStreaming, setIsStreaming] = useState(false);
   const [unread, setUnread] = useState(0);
   const [showActions, setShowActions] = useState(true);
+  const [skillsOpen, setSkillsOpen] = useState(false);
 
   const wsRef = useRef(null);
   const chatEndRef = useRef(null);
@@ -216,6 +218,43 @@ export default function ChatWidget({
 
   const handleKeyDown = (e) => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    if (e.key === "Escape") setSkillsOpen(false);
+  };
+
+  const handleInputChange = (e) => {
+    const val = e.target.value;
+    setInput(val);
+    if (val.startsWith("/")) setSkillsOpen(true);
+    else setSkillsOpen(false);
+  };
+
+  const executeSkill = async (skillId) => {
+    setSkillsOpen(false);
+    setIsStreaming(true);
+    setInput("");
+    setMessages(prev => [...prev, { role: "assistant", content: `🚀 Running ${skillId.replace(/_/g, ' ')}...`, _isSkill: true }]);
+    
+    try {
+      const response = await fetch(`${base}/api/skills/execute`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          skill_id: skillId,
+          chatbot_id: chatbotId ? parseInt(chatbotId) : null,
+          session_id: sessionId.current,
+          args: { query: "general information" }
+        })
+      });
+      const result = await response.json();
+      setMessages(prev => {
+        const f = prev.filter(m => !m._isSkill);
+        return [...f, { role: "assistant", content: result.answer }];
+      });
+    } catch {
+      setMessages(prev => [...prev, { role: "assistant", content: "⚠️ Skill failed." }]);
+    } finally {
+      setIsStreaming(false);
+    }
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -394,15 +433,26 @@ export default function ChatWidget({
                     className="tio-input"
                     rows={1}
                     value={input}
-                    onChange={e => setInput(e.target.value)}
+                    onChange={handleInputChange}
                     onKeyDown={handleKeyDown}
-                    placeholder="Ask anything..."
+                    placeholder="Ask anything or / for skills..."
                     style={{
                       flex: 1, background: "transparent", border: "none",
                       color: "#fff", fontSize: "13px", resize: "none",
                       lineHeight: 1.5, maxHeight: "80px",
                     }}
                   />
+                  <AnimatePresence>
+                    {skillsOpen && (
+                      <div style={{ position: "absolute", bottom: "100%", left: 0, marginBottom: "12px", width: "100%" }}>
+                        <SkillsMenu 
+                          domain={domain} 
+                          onSelect={executeSkill} 
+                          onClose={() => setSkillsOpen(false)} 
+                        />
+                      </div>
+                    )}
+                  </AnimatePresence>
                   <button
                     className="tio-send-btn"
                     onClick={() => sendMessage()}

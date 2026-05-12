@@ -79,18 +79,38 @@ async def delete_chatbot(chatbot_id: int, db: AsyncSession = Depends(get_db)):
     stmt = select(UploadedDocument).where(UploadedDocument.chatbot_id == chatbot_id)
     docs = (await db.execute(stmt)).scalars().all()
     for d in docs:
-        if d.storage_path and os.path.exists(d.storage_path):
-            try: os.remove(d.storage_path)
+        if d.source_path and os.path.exists(d.source_path):
+            try: os.remove(d.source_path)
             except: pass
     
     # 2. Vector Cleanup
     await asyncio.to_thread(delete_chatbot_vectors, chatbot_id)
     
-    # 3. Database Cleanup (Cascades will handle related rows)
+    # 3. Cache & Memory Cleanup
+    await db.execute(delete(SessionMemory).where(SessionMemory.session_id.like(f"%-c{chatbot_id}")))
+    
+    # 4. Database Cleanup (Cascades will handle Conversations/Messages)
     await db.delete(chatbot)
     await db.commit()
     
     return {"status": "deleted"}
+
+@api_router.delete("/chat/session/{session_id}")
+async def delete_session(session_id: str, db: AsyncSession = Depends(get_db)):
+    # 1. Find conversation
+    stmt = select(Conversation).where(Conversation.session_id == session_id)
+    conv = (await db.execute(stmt)).scalar_one_or_none()
+    
+    if conv:
+        # 2. Delete messages (Cascaded)
+        # 3. Delete session memory
+        await db.execute(delete(SessionMemory).where(SessionMemory.session_id == session_id))
+        
+        # 4. Delete conversation
+        await db.delete(conv)
+        await db.commit()
+        
+    return {"status": "session_deleted"}
 
 # --- Ingestion ---
 

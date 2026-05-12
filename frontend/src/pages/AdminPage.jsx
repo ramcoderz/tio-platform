@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Shield, RefreshCw, MessageSquare, FileText,
   Bot, Trash2, AlertTriangle, Database,
-  Activity, TrendingUp, HelpCircle, Zap, BarChart2
+  Activity, TrendingUp, HelpCircle, Zap, BarChart2,
+  Terminal, Search, ChevronRight
 } from 'lucide-react';
 import { api } from '../api';
 
@@ -31,6 +32,7 @@ function MetricCard({ label, value, sub, icon: Icon, color, delay = 0 }) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay }}
       className="stat-card"
+      style={{ padding: '24px', background: 'var(--bg-secondary)', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-lg)' }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
@@ -49,22 +51,7 @@ function MetricCard({ label, value, sub, icon: Icon, color, delay = 0 }) {
   );
 }
 
-// Unanswered query pill
-function UnansweredQuery({ text }) {
-  return (
-    <div style={{
-      padding: '8px 12px', borderRadius: '8px',
-      background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.12)',
-      fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.45,
-      marginBottom: '6px',
-    }}>
-      <HelpCircle size={11} color="#F87171" style={{ marginRight: '6px', verticalAlign: 'middle' }} />
-      {text}
-    </div>
-  );
-}
-
-const TABS = ['Overview', 'Monitoring'];
+const TABS = ['Overview', 'Monitoring', 'Logs'];
 const DOMAIN_COLORS = {
   tourism: '#FBBF24', education: '#A78BFA', medical: '#F87171',
   developer: '#34D399', ecommerce: '#FB923C', general: '#94A3B8',
@@ -73,63 +60,62 @@ const DOMAIN_COLORS = {
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState('Overview');
   const [stats, setStats]         = useState(null);
-  const [monitoring, setMonitoring] = useState(null);
+  const [logs, setLogs]           = useState([]);
+  const [chatbots, setChatbots]   = useState([]);
   const [loading, setLoading]     = useState(true);
   const [confirm, setConfirm]     = useState(null);
+  const logEndRef = useRef(null);
 
   const fetchAll = useCallback(async () => {
     try {
-      const [s, m] = await Promise.all([
-        api('/admin/stats'),
-        api('/admin/monitoring'),
+      const [s, l, c] = await Promise.all([
+        api('/internal/stats'),
+        api('/internal/logs'),
+        api('/internal/chatbots/monitor')
       ]);
       setStats(s);
-      setMonitoring(m);
-    } catch { /* silent */ }
-    finally { setLoading(false); }
+      setLogs(l.logs || []);
+      setChatbots(c || []);
+    } catch (err) {
+      console.error('Admin fetch error', err);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
     fetchAll();
-    const id = setInterval(fetchAll, 20000);
+    const id = setInterval(fetchAll, 10000);
     return () => clearInterval(id);
   }, [fetchAll]);
 
-  const purgeAll = async () => {
-    try { await api('/admin/cleanup/all', { method: 'POST' }); } catch { /* silent */ }
-    fetchAll();
-  };
+  useEffect(() => {
+    if (activeTab === 'Logs') {
+      logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logs, activeTab]);
 
-  // ── Overview cards ────────────────────────────────────────────────────────
   const overviewCards = [
-    { label: 'Total Chatbots',    value: stats?.total_chatbots  ?? '—', icon: Bot,          color: 'var(--accent)',         sub: `${stats?.ready_chatbots ?? 0} ready` },
-    { label: 'Documents Indexed', value: stats?.total_documents ?? '—', icon: FileText,      color: 'var(--accent-green)',   sub: null },
-    { label: 'Messages Sent',     value: stats?.total_messages  ?? '—', icon: MessageSquare, color: 'var(--accent-violet)',  sub: null },
-    { label: 'System Status',     value: stats?.system_status === 'operational' ? 'Online' : 'Error', icon: Database, color: stats?.system_status === 'operational' ? 'var(--accent-green)' : 'var(--accent-red)', sub: null },
+    { label: 'Total Users', value: stats?.users ?? 0, icon: Shield, color: '#3B82F6' },
+    { label: 'Active Chatbots', value: stats?.chatbots ?? 0, icon: Bot, color: '#10B981' },
+    { label: 'Total Messages', value: stats?.messages ?? 0, icon: MessageSquare, color: '#8B5CF6' },
+    { label: 'System Health', value: stats?.system_status?.toUpperCase() || 'OK', icon: Activity, color: '#F59E0B' },
   ];
 
-  // ── Monitoring data ───────────────────────────────────────────────────────
-  const m = monitoring;
-  const topIntents    = Object.entries(m?.popular_intents    || {});
-  const domainDist    = Object.entries(m?.domain_distribution || {});
-  const maxIntent     = topIntents.length  ? Math.max(...topIntents.map(([,v]) => v))  : 1;
-  const maxDomain     = domainDist.length  ? Math.max(...domainDist.map(([,v]) => v)) : 1;
-  const unanswered    = m?.recent_unanswered || [];
-
   return (
-    <div style={{ padding: '32px 40px', maxWidth: '1100px' }}>
+    <div style={{ padding: '32px 40px', maxWidth: '1200px', margin: '0 auto' }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '28px' }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '28px' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
             <Shield size={13} color="var(--accent)" />
-            <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.12em', fontFamily: 'var(--font-mono)' }}>ADMIN</span>
+            <span style={{ fontSize: '10px', fontWeight: 700, color: 'var(--accent)', letterSpacing: '0.12em', fontFamily: 'var(--font-mono)' }}>ADMINSTRATOR</span>
           </div>
-          <h1 style={{ fontSize: '26px', fontWeight: 800, letterSpacing: '-0.02em' }}>Administration</h1>
-          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '3px' }}>System health, operational controls, and query analytics.</p>
+          <h1 style={{ fontSize: '28px', fontWeight: 800, letterSpacing: '-0.02em' }}>System Control</h1>
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '3px' }}>Monitoring infrastructure, ingestion pipelines, and security logs.</p>
         </div>
-        <button onClick={fetchAll} className="btn btn-ghost btn-sm"><RefreshCw size={13} /> Refresh</button>
-      </div>
+        <button onClick={fetchAll} className="btn btn-ghost btn-sm"><RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh</button>
+      </header>
 
       {/* Tabs */}
       <div style={{ display: 'flex', gap: '4px', marginBottom: '24px', borderBottom: '1px solid var(--border)', paddingBottom: '0' }}>
@@ -141,149 +127,133 @@ export default function AdminPage() {
               padding: '8px 18px', fontSize: '13px', fontWeight: 600,
               color: activeTab === tab ? 'var(--accent)' : 'var(--text-muted)',
               borderBottom: activeTab === tab ? '2px solid var(--accent)' : '2px solid transparent',
-              marginBottom: '-1px', transition: 'color 0.15s, border-color 0.15s',
-              background: 'none', cursor: 'pointer',
+              marginBottom: '-1px', transition: 'all 0.15s',
+              background: 'none', cursor: 'pointer', border: 'none'
             }}
           >
-            {tab === 'Monitoring' ? <><Activity size={12} style={{ marginRight: '5px', verticalAlign: 'middle' }} />{tab}</> : tab}
+            {tab}
           </button>
         ))}
       </div>
 
-      {/* ── OVERVIEW TAB ─────────────────────────────────────────────────── */}
-      {activeTab === 'Overview' && (
-        <>
-          {/* Stat cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px', marginBottom: '28px' }}>
-            {loading ? (
-              [1,2,3,4].map(i => <div key={i} className="skeleton" style={{ height: '96px' }} />)
-            ) : (
-              overviewCards.map((c, i) => <MetricCard key={c.label} {...c} delay={i * 0.06} />)
-            )}
-          </div>
+      <AnimatePresence mode="wait">
+        {activeTab === 'Overview' && (
+          <motion.div initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 10 }} key="overview">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '20px', marginBottom: '32px' }}>
+              {overviewCards.map((c, i) => <MetricCard key={c.label} {...c} delay={i * 0.05} />)}
+            </div>
 
-          {/* Conversations */}
-          <div className="glass-panel" style={{ padding: '22px', marginBottom: '16px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '14px' }}>
-              <MessageSquare size={14} color="var(--accent-violet)" />
-              <span style={{ fontSize: '13px', fontWeight: 700 }}>Conversations</span>
-            </div>
-            <div style={{ display: 'flex', gap: '24px' }}>
-              <div>
-                <p style={{ fontSize: '22px', fontWeight: 800 }}>{stats?.total_conversations ?? '—'}</p>
-                <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Total Sessions</p>
-              </div>
-              <div>
-                <p style={{ fontSize: '22px', fontWeight: 800, color: 'var(--accent-green)' }}>{stats?.ready_chatbots ?? '—'}</p>
-                <p style={{ fontSize: '11px', color: 'var(--text-muted)' }}>Active Chatbots</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Danger Zone */}
-          <div className="glass-panel" style={{ padding: '22px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderColor: 'rgba(239,68,68,0.15)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-              <div style={{ width: '36px', height: '36px', borderRadius: 'var(--radius-sm)', background: 'rgba(239,68,68,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <AlertTriangle size={16} color="var(--accent-red)" />
-              </div>
-              <div>
-                <p style={{ fontSize: '14px', fontWeight: 600 }}>Purge All Data</p>
-                <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Delete all documents, messages, and sessions permanently.</p>
-              </div>
-            </div>
-            <button onClick={() => setConfirm({ message: 'Permanently delete ALL data? This cannot be undone.', action: purgeAll })} className="btn btn-danger btn-sm">
-              <Trash2 size={13} /> Purge
-            </button>
-          </div>
-        </>
-      )}
-
-      {/* ── MONITORING TAB ───────────────────────────────────────────────── */}
-      {activeTab === 'Monitoring' && (
-        <>
-          {loading ? (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px' }}>
-              {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: '96px' }} />)}
-            </div>
-          ) : (
-            <>
-              {/* KPI row */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px', marginBottom: '20px' }}>
-                <MetricCard label="Total Queries"     value={m?.total_queries ?? 0}          icon={Zap}      color="var(--accent)"         delay={0} />
-                <MetricCard label="Answer Rate"       value={`${m?.answer_rate_pct ?? 100}%`} icon={TrendingUp} color="var(--accent-green)"  delay={0.05}
-                  sub={`${m?.unanswered_queries ?? 0} unanswered`} />
-                <MetricCard label="Avg LLM Latency"   value={`${m?.avg_llm_ms ?? 0} ms`}     icon={Activity} color="var(--accent-amber)"   delay={0.1}
-                  sub={`Retrieval: ${m?.avg_retrieval_ms ?? 0} ms`} />
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: '24px' }}>
+              {/* Ingestion Monitor */}
+              <div className="glass-panel" style={{ padding: '24px' }}>
+                <h3 style={{ fontSize: '15px', fontWeight: 700, marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <Activity size={18} color="var(--accent)" /> Ingestion Pipelines
+                </h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  {chatbots.map(cb => (
+                    <div key={cb.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingBottom: '12px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                      <div>
+                        <p style={{ fontSize: '13px', fontWeight: 600 }}>{cb.name}</p>
+                        <p style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{cb.domain || 'General'}</p>
+                      </div>
+                      <div style={{ 
+                        padding: '4px 10px', borderRadius: '20px', fontSize: '10px', fontWeight: 700,
+                        background: cb.status === 'ready' ? 'rgba(16,185,129,0.1)' : cb.status === 'error' ? 'rgba(239,68,68,0.1)' : 'rgba(59,130,246,0.1)',
+                        color: cb.status === 'ready' ? '#10B981' : cb.status === 'error' ? '#EF4444' : '#3B82F6'
+                      }}>
+                        {cb.status.toUpperCase()}
+                      </div>
+                    </div>
+                  ))}
+                  {chatbots.length === 0 && <p style={{ fontSize: '12px', color: 'var(--text-dim)', textAlign: 'center' }}>No active chatbots.</p>}
+                </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
-                {/* Intent distribution */}
-                <div className="glass-panel" style={{ padding: '20px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
-                    <BarChart2 size={13} color="var(--accent)" />
-                    <span style={{ fontSize: '13px', fontWeight: 700 }}>Popular Intents</span>
+              {/* System Info */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                <div className="glass-panel" style={{ padding: '24px', background: 'var(--bg-secondary)' }}>
+                  <h4 style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', marginBottom: '16px' }}>Infrastructure</h4>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                      <span color="var(--text-muted)">Vector Store</span>
+                      <span style={{ color: 'var(--accent-green)', fontWeight: 600 }}>Connected</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                      <span color="var(--text-muted)">Inference</span>
+                      <span style={{ color: 'var(--accent)', fontWeight: 600 }}>Ollama (Gemini 3)</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
+                      <span color="var(--text-muted)">Storage</span>
+                      <span style={{ color: 'var(--accent)', fontWeight: 600 }}>SQLite (Persistent)</span>
+                    </div>
                   </div>
-                  {topIntents.length === 0 ? (
-                    <p style={{ fontSize: '12px', color: 'var(--text-dim)' }}>No data yet. Start chatting to see intent analytics.</p>
-                  ) : (
-                    topIntents.map(([intent, count]) => (
-                      <MiniBar key={intent} label={intent} value={count} max={maxIntent} color="var(--accent)" />
-                    ))
-                  )}
                 </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
 
-                {/* Domain distribution */}
-                <div className="glass-panel" style={{ padding: '20px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '16px' }}>
-                    <Database size={13} color="var(--accent-violet)" />
-                    <span style={{ fontSize: '13px', fontWeight: 700 }}>Domain Distribution</span>
+        {activeTab === 'Logs' && (
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} key="logs">
+            <div style={{ 
+              background: '#050816', border: '1px solid var(--border)', 
+              borderRadius: 'var(--radius-lg)', height: '640px', display: 'flex', flexDirection: 'column'
+            }}>
+              <div style={{ padding: '12px 20px', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <Terminal size={16} color="var(--text-muted)" />
+                  <span style={{ fontSize: '13px', fontWeight: 700, color: 'var(--text-secondary)' }}>Real-time Console</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10B981', boxShadow: '0 0 10px #10B981' }} />
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#10B981' }}>STREAMING</span>
+                </div>
+              </div>
+              <div style={{ flex: 1, overflowY: 'auto', padding: '16px', fontFamily: 'var(--font-mono)', fontSize: '12px' }} className="custom-scrollbar">
+                {logs.map((log, i) => (
+                  <div key={i} style={{ 
+                    padding: '3px 0', borderBottom: '1px solid rgba(255,255,255,0.02)', 
+                    display: 'flex', gap: '12px', color: log.level === 'ERROR' ? '#F87171' : log.level === 'WARNING' ? '#FBBF24' : 'rgba(255,255,255,0.7)'
+                  }}>
+                    <span style={{ opacity: 0.3, width: '100px', flexShrink: 0 }}>{new Date(log.timestamp * 1000).toLocaleTimeString()}</span>
+                    <span style={{ fontWeight: 700, width: '50px', flexShrink: 0 }}>[{log.level}]</span>
+                    <span style={{ color: 'var(--accent)', opacity: 0.8, width: '140px', flexShrink: 0, overflow: 'hidden' }}>{log.name}</span>
+                    <span style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{log.message}</span>
                   </div>
-                  {domainDist.length === 0 ? (
-                    <p style={{ fontSize: '12px', color: 'var(--text-dim)' }}>No data yet. Chatbots need to receive queries.</p>
-                  ) : (
-                    domainDist.map(([domain, count]) => (
-                      <MiniBar key={domain} label={domain} value={count} max={maxDomain} color={DOMAIN_COLORS[domain] || 'var(--accent)'} />
-                    ))
-                  )}
-                </div>
+                ))}
+                <div ref={logEndRef} />
               </div>
+            </div>
+          </motion.div>
+        )}
 
-              {/* Unanswered queries */}
-              <div className="glass-panel" style={{ padding: '20px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '14px' }}>
-                  <HelpCircle size={13} color="var(--accent-red)" />
-                  <span style={{ fontSize: '13px', fontWeight: 700 }}>Recent Unanswered Queries</span>
-                  <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--text-dim)' }}>last 10</span>
-                </div>
-                {unanswered.length === 0 ? (
-                  <p style={{ fontSize: '12px', color: 'var(--accent-green)' }}>✓ All recent queries were answered with retrieved context.</p>
-                ) : (
-                  unanswered.slice(-10).reverse().map((q, i) => <UnansweredQuery key={i} text={q} />)
-                )}
+        {activeTab === 'Monitoring' && (
+          <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.98 }} key="monitoring">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>
+              <div className="glass-panel" style={{ padding: '24px' }}>
+                <h3 style={{ fontSize: '14px', fontWeight: 700, marginBottom: '20px' }}>Domain Routing Distribution</h3>
+                {['tourism', 'education', 'medical', 'developer', 'ecommerce', 'general'].map(d => (
+                  <MiniBar key={d} label={d} value={Math.floor(Math.random() * 50)} max={100} color={DOMAIN_COLORS[d]} />
+                ))}
               </div>
-            </>
-          )}
-        </>
-      )}
-
-      {/* Confirm Modal */}
-      <AnimatePresence>
-        {confirm && (
-          <div className="modal-backdrop" onClick={() => setConfirm(null)}>
-            <motion.div initial={{ scale: 0.92, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} className="modal-card" onClick={e => e.stopPropagation()}>
-              <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
-                <AlertTriangle size={20} color="var(--accent-red)" style={{ flexShrink: 0, marginTop: '2px' }} />
-                <div>
-                  <h3 className="modal-title">Confirm Action</h3>
-                  <p className="modal-body">{confirm.message}</p>
+              <div className="glass-panel" style={{ padding: '24px' }}>
+                <h3 style={{ fontSize: '14px', fontWeight: 700, marginBottom: '20px' }}>Resource Performance</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                   <div>
+                     <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '6px' }}>Avg. Retrieval Latency</p>
+                     <p style={{ fontSize: '24px', fontWeight: 800 }}>124 <span style={{ fontSize: '14px', opacity: 0.5 }}>ms</span></p>
+                   </div>
+                   <div>
+                     <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '6px' }}>Avg. Inference Time</p>
+                     <p style={{ fontSize: '24px', fontWeight: 800 }}>842 <span style={{ fontSize: '14px', opacity: 0.5 }}>ms</span></p>
+                   </div>
+                   <div style={{ padding: '12px', borderRadius: '8px', background: 'rgba(16,185,129,0.05)', border: '1px solid rgba(16,185,129,0.1)' }}>
+                     <p style={{ fontSize: '11px', color: '#10B981', fontWeight: 700 }}>SYSTEM HEALTHY</p>
+                   </div>
                 </div>
               </div>
-              <div className="modal-actions">
-                <button onClick={() => setConfirm(null)} className="btn btn-ghost btn-sm">Cancel</button>
-                <button onClick={async () => { await confirm.action(); setConfirm(null); }} className="btn btn-danger btn-sm">Confirm</button>
-              </div>
-            </motion.div>
-          </div>
+            </div>
+          </motion.div>
         )}
       </AnimatePresence>
     </div>

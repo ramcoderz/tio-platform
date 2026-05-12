@@ -52,12 +52,20 @@ export function AppProvider({ children }) {
     const next = theme === "dark" ? "light-neutral" : "dark";
     localStorage.setItem("tio_theme", next);
     setTheme(next);
+    // Sync to backend
+    if (user) {
+      import("../api").then(({ api }) => api("/auth/me", { method: "PUT", body: JSON.stringify({ theme: next }) }));
+    }
   };
 
   const setLightVariant = (variant) => {
     const next = `light-${variant}`;
     localStorage.setItem("tio_theme", next);
     setTheme(next);
+    // Sync to backend
+    if (user) {
+      import("../api").then(({ api }) => api("/auth/me", { method: "PUT", body: JSON.stringify({ theme: next }) }));
+    }
   };
 
   const logout = () => {

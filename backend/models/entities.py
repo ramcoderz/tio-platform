@@ -66,6 +66,11 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True)
     hashed_password: Mapped[str] = mapped_column(String(255))
     role: Mapped[str] = mapped_column(String(32), default="user")
+    
+    # Settings & Preferences
+    theme: Mapped[str] = mapped_column(String(16), default="dark")
+    private_inference: Mapped[bool] = mapped_column(Integer, default=0) # SQLite uses Integer for bool
+    
     is_active: Mapped[bool] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
