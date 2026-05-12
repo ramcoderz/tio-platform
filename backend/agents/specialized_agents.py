@@ -317,10 +317,10 @@ async def orchestrate_tasks(text: str, session_id: str | None = None, db: Any = 
         match = re.search(r"(\[.*\])", raw, re.DOTALL)
         if not match: return []
         tasks_data = json.loads(match.group(1))
-        if db and session_id:
-            from backend.models.entities import Task
-            for t in tasks_data:
-                db.add(Task(session_id=session_id, description=t.get("task", ""), owner=t.get("owner"), deadline=t.get("deadline")))
-            await db.commit()
+        # if db and session_id:
+        #     from backend.models.entities import Task
+        #     for t in tasks_data:
+        #         db.add(Task(session_id=session_id, description=t.get("task", ""), owner=t.get("owner"), deadline=t.get("deadline")))
+        #     await db.commit()
         return tasks_data
     except: return []

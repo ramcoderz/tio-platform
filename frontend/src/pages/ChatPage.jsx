@@ -56,7 +56,7 @@ export default function ChatPage() {
     if (reconnectAttempts.current >= 5) return;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host === 'localhost:5173' ? 'localhost:8888' : window.location.host;
+    const host = window.location.host === 'localhost:5173' ? 'localhost:8000' : window.location.host;
     const token = localStorage.getItem('token') || '';
     const ws = new WebSocket(`${protocol}//${host}/ws/chat/${sessionId}?token=${encodeURIComponent(token)}`);
     wsRef.current = ws;

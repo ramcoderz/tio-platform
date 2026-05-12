@@ -109,7 +109,7 @@ export default function ChatWidget({
   const sessionId = useRef(`widget_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
   const reconnectRef = useRef(0);
 
-  const base = apiBase || (typeof window !== "undefined" ? window.location.origin : "http://localhost:8888");
+  const base = apiBase || (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
   const quickActions = DOMAIN_QUICK_ACTIONS[domain] || DOMAIN_QUICK_ACTIONS.general;
 
   // ── WebSocket connection ──────────────────────────────────────────────────
