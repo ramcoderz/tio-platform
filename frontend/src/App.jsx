@@ -13,10 +13,10 @@ import RegisterPage from "./pages/RegisterPage";
 
 export default function App() {
   const location = useLocation();
-  const { user } = useAppCtx();
+  const { user, theme } = useAppCtx();
 
   return (
-    <div className="dark">
+    <div className={theme}>
       <AppShell>
         <AnimatePresence mode="wait">
           <motion.div

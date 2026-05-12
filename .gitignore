@@ -26,8 +26,9 @@ wheels/
 *.db-shm
 *.db-wal
 
-# Environment
+# Environment — never commit secrets
 .env
+.env.local
 .venv
 venv/
 ENV/
@@ -39,14 +40,33 @@ server_output.log
 error.log
 output.log
 
-# Frontend
+# Frontend build artifacts
 frontend/node_modules/
 frontend/dist/
 frontend/.env
 frontend/.env.local
 
-# Project specific
+# Project data — user-generated, not source code
 data/
 scratch/
+
+# IDE & editor
 .gemini/
 .antigravity/
+.cursor/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Personal / dev-only files — not for public repo
+TASKS.md
+RUN_GUIDE.md
+TODO.md
+final_report.md
+college_project_report.md

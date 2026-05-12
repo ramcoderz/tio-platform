@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAppCtx } from '../context/AppContext';
 import { LogIn, Eye, EyeOff, Zap } from 'lucide-react';
 import { api } from '../api';
+import { useChatStore } from '../store';
 
 export default function LoginPage() {
   const [username, setUsername] = useState('');
@@ -12,6 +13,7 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { setUser } = useAppCtx();
+  const { setSessionFromUser } = useChatStore();
   const navigate = useNavigate();
 
   const handleLogin = async (e) => {
@@ -19,13 +21,16 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      const { access_token, user: loggedUser } = await api('/auth/login', { 
-        method: 'POST', 
-        body: JSON.stringify({ username, password }) 
+      const { access_token, user: loggedUser } = await api('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password })
       });
-      
+
       localStorage.setItem('token', access_token);
+      localStorage.setItem('tio_user_id', loggedUser.id);
       setUser(loggedUser);
+      // Anchor chat session to this specific user account
+      setSessionFromUser(loggedUser.id);
       navigate('/');
     } catch (err) {
       setError(err.message || 'Connection error');
@@ -33,6 +38,7 @@ export default function LoginPage() {
       setLoading(false);
     }
   };
+
 
   return (
     <div style={{

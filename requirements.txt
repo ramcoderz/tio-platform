@@ -20,3 +20,4 @@ python-dotenv
 aiofiles
 jinja2
 email-validator
+fpdf2

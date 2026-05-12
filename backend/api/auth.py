@@ -39,8 +39,8 @@ async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)):
     await db.commit()
     await db.refresh(new_user)
     
-    token = create_access_token({"sub": new_user.username})
-    return {"access_token": token, "token_type": "bearer", "user": {"username": new_user.username, "role": new_user.role}}
+    token = create_access_token({"sub": new_user.username, "uid": new_user.id})
+    return {"access_token": token, "token_type": "bearer", "user": {"id": new_user.id, "username": new_user.username, "role": new_user.role}}
 
 @router.post("/login")
 async def login(payload: UserLogin, db: AsyncSession = Depends(get_db)):
@@ -50,13 +50,17 @@ async def login(payload: UserLogin, db: AsyncSession = Depends(get_db)):
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     
-    token = create_access_token({"sub": user.username})
-    return {"access_token": token, "token_type": "bearer", "user": {"username": user.username, "role": user.role}}
+    token = create_access_token({"sub": user.username, "uid": user.id})
+    return {"access_token": token, "token_type": "bearer", "user": {"id": user.id, "username": user.username, "role": user.role}}
+
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import jwt
+
+auth_scheme = HTTPBearer()
 
 @router.get("/me")
-async def get_me(token: str = None, db: AsyncSession = Depends(get_db)):
-    if not token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+async def get_me(creds: HTTPAuthorizationCredentials = Depends(auth_scheme), db: AsyncSession = Depends(get_db)):
+    token = creds.credentials
     try:
         payload = decode_token(token)
         username = payload.get("sub")
@@ -68,6 +72,6 @@ async def get_me(token: str = None, db: AsyncSession = Depends(get_db)):
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
             
-        return {"username": user.username, "role": user.role, "email": user.email}
+        return {"id": user.id, "username": user.username, "role": user.role, "email": user.email}
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")

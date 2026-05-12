@@ -37,48 +37,84 @@ class Scraper:
             await browser.close()
             return content
 
-    async def discover_pages(self, base_url: str, limit: int = 10) -> list[str]:
-        """Discover important pages on the website."""
+    async def discover_assets(self, base_url: str, limit: int = 20, depth: int = 1) -> tuple[list[str], list[str]]:
+        """Discover pages and document links on the website."""
         domain = urlparse(base_url).netloc
-        discovered = {base_url}
+        discovered_pages = {base_url}
+        discovered_docs = set()
+        to_visit = [(base_url, 0)]
+        visited = set()
         
+        doc_extensions = {'.pdf', '.docx', '.txt', '.md'}
+
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
                 page = await browser.new_page()
-                await page.goto(base_url, wait_until="domcontentloaded", timeout=20000)
-                
-                # Find all links on the same domain
-                links = await page.eval_on_selector_all("a[href]", "elements => elements.map(e => e.href)")
+
+                while to_visit and (len(discovered_pages) + len(discovered_docs)) < limit * 5:
+                    current_url, current_depth = to_visit.pop(0)
+                    if current_url in visited or current_depth > depth:
+                        continue
+                    
+                    visited.add(current_url)
+                    try:
+                        await page.goto(current_url, wait_until="domcontentloaded", timeout=15000)
+                        links = await page.eval_on_selector_all("a[href]", "elements => elements.map(e => e.href)")
+                        
+                        for link in links:
+                            parsed = urlparse(link)
+                            if parsed.netloc == domain:
+                                clean_link = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+                                if clean_link.endswith('/'): clean_link = clean_link[:-1]
+                                
+                                # Check if it's a document
+                                path_lower = parsed.path.lower()
+                                if any(path_lower.endswith(ext) for ext in doc_extensions):
+                                    discovered_docs.add(clean_link)
+                                    continue
+
+                                # Ignore binaries/archives
+                                if any(path_lower.endswith(ext) for ext in {'.exe', '.zip', '.rar', '.msi', '.js', '.bat'}):
+                                    continue
+                                
+                                # Filter ignored patterns
+                                if any(re.search(p, clean_link.lower()) for p in self.ignored_patterns):
+                                    continue
+                                
+                                if clean_link not in discovered_pages:
+                                    discovered_pages.add(clean_link)
+                                    if current_depth + 1 <= depth:
+                                        to_visit.append((clean_link, current_depth + 1))
+                            
+                            if (len(discovered_pages) + len(discovered_docs)) >= limit * 6: break
+                    except Exception as e:
+                        print(f"Error visiting {current_url}: {e}")
+                        continue
+
                 await browser.close()
-                
-                for link in links:
-                    parsed = urlparse(link)
-                    if parsed.netloc == domain:
-                        # Clean link
-                        clean_link = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                        if clean_link.endswith('/'): clean_link = clean_link[:-1]
-                        
-                        # Filter ignored patterns
-                        if any(re.search(p, clean_link.lower()) for p in self.ignored_patterns):
-                            continue
-                        
-                        discovered.add(clean_link)
-                        if len(discovered) >= limit * 2: # Get a pool to prioritize from
-                            break
         except Exception as e:
             print(f"Discovery error for {base_url}: {e}")
 
-        # Prioritize important pages
-        def score(url):
-            s = 0
-            for kw in self.priority_keywords:
-                if kw in url.lower(): s += 10
+        # Prioritize and sort
+        def score(url, is_doc=False):
+            s = 10 if is_doc else 0
+            url_lower = url.lower()
+            priority_map = {
+                'dept': 20, 'department': 25, 'faculty': 20, 'course': 15, 
+                'admission': 20, 'docs': 20, 'brochure': 25, 'manual': 25,
+                'policy': 20, 'faq': 15, 'handbook': 25, 'guide': 25
+            }
+            for kw, val in priority_map.items():
+                if kw in url_lower: s += val
             if url == base_url: s += 100
+            s -= (url_lower.count('/') * 2)
             return s
 
-        sorted_pages = sorted(list(discovered), key=score, reverse=True)
-        return sorted_pages[:limit]
+        sorted_pages = sorted(list(discovered_pages), key=score, reverse=True)[:limit]
+        sorted_docs = sorted(list(discovered_docs), key=lambda x: score(x, True), reverse=True)[:limit]
+        
+        return sorted_pages, sorted_docs
 
     def detect_domain(self, text: str, url: str) -> str:
         """Lightweight domain detection based on keywords."""

@@ -1,4 +1,5 @@
 import { createContext, useContext, useMemo, useState, useEffect } from "react";
+import { useChatStore } from "../store";
 
 const AppContext = createContext(null);
 
@@ -11,7 +12,11 @@ export function AppProvider({ children }) {
     if (token) {
       import("../api").then(({ api }) => {
         api("/auth/me")
-          .then(setUser)
+          .then((u) => {
+            setUser(u);
+            // Anchor session to this user account
+            useChatStore.getState().setSessionFromUser(u.id);
+          })
           .catch(() => {
             localStorage.removeItem("token");
             setUser(null);
@@ -57,8 +62,12 @@ export function AppProvider({ children }) {
 
   const logout = () => {
     localStorage.removeItem("token");
+    localStorage.removeItem("tio_session_id");
+    localStorage.removeItem("tio_user_id");
+    useChatStore.getState().clearSession();
     setUser(null);
   };
+
 
   return (
     <AppContext.Provider value={{ theme, toggleTheme, setLightVariant, user, setUser, logout }}>

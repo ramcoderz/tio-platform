@@ -1,208 +1,214 @@
-import { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
-import { 
-  Globe, Upload, CheckCircle2, Loader2, Bot, 
-  ArrowRight, ShieldCheck, Sparkles, MessageCircle
-} from "lucide-react";
-import { api } from "../api";
+import { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { motion } from 'framer-motion';
+import { Globe, Upload, ArrowRight, Loader2, CheckCircle2, FileText, X } from 'lucide-react';
+import { api } from '../api';
+
+const STAGES = ['Crawling', 'Extracting', 'Indexing', 'Ready'];
 
 export default function CreateChatbotPage() {
-  const [url, setUrl] = useState("");
+  const navigate = useNavigate();
+  const fileRef = useRef(null);
+
+  const [step, setStep] = useState(1);
+  const [url, setUrl] = useState('');
+  const [name, setName] = useState('');
+  const [chatbotId, setChatbotId] = useState(null);
   const [files, setFiles] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [chatbot, setChatbot] = useState(null);
-  const [progress, setProgress] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const [status, setStatus] = useState('idle'); // idle | creating | ingesting | ready | error
+  const [stage, setStage] = useState(0);
+  const [error, setError] = useState('');
+
+  // Poll chatbot status during ingestion
+  useEffect(() => {
+    if (!chatbotId || status === 'ready' || status === 'error') return;
+
+    const interval = setInterval(async () => {
+      try {
+        const cb = await api(`/chatbots/${chatbotId}`);
+        if (cb.status === 'ingesting') {
+          setStatus('ingesting');
+          setStage(prev => Math.min(prev + 1, 2)); // progress through stages
+        } else if (cb.status === 'ready') {
+          setStatus('ready');
+          setStage(3);
+          clearInterval(interval);
+          // Auto-redirect after 1.5s
+          setTimeout(() => navigate(`/chat?chatbot_id=${chatbotId}`), 1500);
+        } else if (cb.status === 'error') {
+          setStatus('error');
+          setError('Ingestion failed. Try a different URL.');
+          clearInterval(interval);
+        }
+      } catch { /* silent */ }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [chatbotId, status, navigate]);
 
   const handleCreate = async () => {
-    if (!url && files.length === 0) return;
-    setLoading(true);
+    if (!url.trim()) return;
+    setStatus('creating');
+    setError('');
     try {
-      const data = await api("/chatbots", "POST", { website_url: url });
-      setChatbot(data);
-      
-      // If there are files, upload them
-      for (const file of files) {
-        const formData = new FormData();
-        formData.append("file", file);
-        await fetch(`${window.location.origin}/api/chatbots/${data.id}/upload`, {
-          method: "POST",
-          body: formData
-        });
-      }
-      
-      // Start polling for status
-      startPolling(data.id);
+      const chatbot = await api('/chatbots', {
+        method: 'POST',
+        body: JSON.stringify({ name: name.trim() || null, website_url: url.trim() })
+      });
+      setChatbotId(chatbot.id);
+      setStatus('ingesting');
+      setStage(0);
+      setStep(2);
     } catch (err) {
-      console.error(err);
-      setLoading(false);
+      setStatus('error');
+      setError(err.message || 'Failed to create chatbot.');
     }
   };
 
-  const startPolling = (id) => {
-    const interval = setInterval(async () => {
+  const handleUpload = async (fileList) => {
+    if (!chatbotId || !fileList.length) return;
+    setUploading(true);
+    for (const file of fileList) {
+      const formData = new FormData();
+      formData.append('file', file);
       try {
-        const data = await api(`/chatbots/${id}`);
-        setChatbot(data);
-        if (data.status === 'ready' || data.status === 'error') {
-          clearInterval(interval);
-          setLoading(false);
-        }
-      } catch (err) {
-        clearInterval(interval);
-        setLoading(false);
+        await fetch(`/api/chatbots/${chatbotId}/upload`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
+          body: formData
+        });
+        setFiles(prev => [...prev, { name: file.name, status: 'done' }]);
+      } catch {
+        setFiles(prev => [...prev, { name: file.name, status: 'error' }]);
       }
-    }, 2000);
+    }
+    setUploading(false);
   };
 
-  return (
-    <div style={{ padding: '40px', maxWidth: '1400px', margin: '0 auto', height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <header style={{ marginBottom: '32px' }}>
-        <h1 style={{ fontSize: '28px', fontWeight: 800, marginBottom: '8px' }}>Create New Chatbot</h1>
-        <p style={{ color: '#64748b' }}>Connect your website and documents to build a context-aware assistant.</p>
-      </header>
+  const progressPercent = status === 'ready' ? 100 : status === 'ingesting' ? ((stage + 1) / STAGES.length) * 85 : 0;
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '32px', flex: 1 }}>
-        
-        {/* LEFT: Configuration */}
-        <section className="glass-panel" style={{ padding: '24px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-          <div>
-            <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', marginBottom: '12px' }}>Website URL</label>
-            <div style={{ position: 'relative' }}>
-              <Globe size={18} style={{ position: 'absolute', left: '12px', top: '12px', color: '#64748b' }} />
-              <input 
-                type="text" 
-                placeholder="https://example.com" 
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                style={{ width: '100%', padding: '12px 12px 12px 40px', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', color: '#fff' }}
-              />
-            </div>
+  return (
+    <div style={{ padding: '40px', maxWidth: '640px', margin: '0 auto' }}>
+      <div style={{ marginBottom: '40px' }}>
+        <h1 style={{ fontSize: '28px', fontWeight: 800, letterSpacing: '-0.02em', marginBottom: '6px' }}>Create Chatbot</h1>
+        <p style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>Paste a website URL to generate a context-aware assistant.</p>
+      </div>
+
+      {/* Step 1: URL + Name */}
+      {step === 1 && (
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="glass-panel" style={{ padding: '28px' }}>
+          <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>Website URL</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '20px' }}>
+            <Globe size={18} color="var(--text-muted)" style={{ flexShrink: 0 }} />
+            <input
+              className="input"
+              placeholder="https://example.com"
+              value={url}
+              onChange={e => setUrl(e.target.value)}
+              autoFocus
+            />
           </div>
 
-          <div>
-            <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', marginBottom: '12px' }}>Upload Documents</label>
-            <div 
-              style={{ border: '2px dashed rgba(255,255,255,0.08)', borderRadius: '12px', padding: '32px', textAlign: 'center', cursor: 'pointer' }}
-              onClick={() => document.getElementById('file-input').click()}
+          <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>Name (optional)</label>
+          <input
+            className="input"
+            placeholder="Auto-generated from URL"
+            value={name}
+            onChange={e => setName(e.target.value)}
+            style={{ marginBottom: '24px' }}
+          />
+
+          {error && <p style={{ color: 'var(--accent-red)', fontSize: '13px', marginBottom: '16px' }}>{error}</p>}
+
+          <button
+            onClick={handleCreate}
+            disabled={!url.trim() || status === 'creating'}
+            className="btn btn-primary"
+            style={{ width: '100%', justifyContent: 'center', opacity: !url.trim() ? 0.4 : 1 }}
+          >
+            {status === 'creating' ? <><Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> Creating...</> : <><ArrowRight size={16} /> Create & Start Ingestion</>}
+          </button>
+        </motion.div>
+      )}
+
+      {/* Step 2: Ingestion Progress + Optional Uploads */}
+      {step === 2 && (
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+          {/* Progress */}
+          <div className="glass-panel" style={{ padding: '28px', marginBottom: '20px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <p style={{ fontSize: '14px', fontWeight: 700 }}>
+                {status === 'ready' ? '✓ Chatbot Ready!' : status === 'error' ? '✕ Ingestion Failed' : 'Processing Website...'}
+              </p>
+              <span className={`badge ${status === 'ready' ? 'badge-green' : status === 'error' ? 'badge-red' : 'badge-amber badge-pulse'}`}>
+                {status === 'ready' ? 'Complete' : status === 'error' ? 'Error' : STAGES[stage]}
+              </span>
+            </div>
+
+            <div className="progress-bar">
+              <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px' }}>
+              {STAGES.map((s, i) => (
+                <span key={s} style={{
+                  fontSize: '11px', fontWeight: 600, fontFamily: 'var(--font-mono)',
+                  color: i <= stage ? 'var(--accent)' : 'var(--text-dim)'
+                }}>
+                  {i <= stage ? '✓' : '○'} {s}
+                </span>
+              ))}
+            </div>
+
+            {error && <p style={{ color: 'var(--accent-red)', fontSize: '13px', marginTop: '16px' }}>{error}</p>}
+            
+            {status === 'ready' && (
+              <p style={{ color: 'var(--text-secondary)', fontSize: '13px', marginTop: '16px' }}>Redirecting to chat...</p>
+            )}
+          </div>
+
+          {/* Optional File Upload */}
+          <div className="glass-panel" style={{ padding: '28px' }}>
+            <p style={{ fontSize: '14px', fontWeight: 700, marginBottom: '4px' }}>Upload Additional Files</p>
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', marginBottom: '20px' }}>Optional — add PDFs, DOCX, or text files for deeper grounding.</p>
+
+            <div
+              onClick={() => fileRef.current?.click()}
+              style={{
+                border: '2px dashed var(--border)', borderRadius: 'var(--radius-md)',
+                padding: '32px', textAlign: 'center', cursor: 'pointer',
+                transition: 'all 0.2s'
+              }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent)'}
+              onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border)'}
             >
-              <Upload size={32} style={{ color: '#00C6FF', marginBottom: '12px' }} />
-              <p style={{ fontSize: '14px', color: '#94a3b8' }}>Click to upload PDFs, Docx, or TXT</p>
-              <input 
-                id="file-input" 
-                type="file" 
-                multiple 
-                hidden 
-                onChange={(e) => setFiles(Array.from(e.target.files))}
+              <Upload size={24} color="var(--text-muted)" style={{ margin: '0 auto 8px' }} />
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Click to browse · PDF, DOCX, TXT, MD</p>
+              <input
+                ref={fileRef}
+                type="file"
+                multiple
+                accept=".pdf,.docx,.txt,.md"
+                onChange={e => handleUpload(e.target.files)}
+                style={{ display: 'none' }}
               />
             </div>
+
             {files.length > 0 && (
-              <div style={{ marginTop: '12px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 {files.map((f, i) => (
-                  <div key={i} style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(0,198,255,0.1)', color: '#00C6FF', fontSize: '12px' }}>
-                    {f.name}
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', padding: '6px 0' }}>
+                    <FileText size={14} color={f.status === 'done' ? 'var(--accent-green)' : 'var(--accent-red)'} />
+                    <span style={{ color: 'var(--text-secondary)' }}>{f.name}</span>
+                    <CheckCircle2 size={14} color={f.status === 'done' ? 'var(--accent-green)' : 'var(--accent-red)'} style={{ marginLeft: 'auto' }} />
                   </div>
                 ))}
               </div>
             )}
           </div>
-
-          <button 
-            onClick={handleCreate}
-            disabled={loading || (!url && files.length === 0)}
-            style={{ 
-              marginTop: 'auto', 
-              width: '100%', 
-              padding: '14px', 
-              borderRadius: '12px', 
-              background: 'linear-gradient(135deg, #00C6FF, #0072FF)', 
-              color: '#050816', 
-              fontWeight: 700, 
-              border: 'none', 
-              cursor: 'pointer',
-              opacity: (loading || (!url && files.length === 0)) ? 0.5 : 1
-            }}
-          >
-            {loading ? <Loader2 className="animate-spin" style={{ margin: '0 auto' }} /> : "Generate Chatbot"}
-          </button>
-        </section>
-
-        {/* CENTER: Status & Domain */}
-        <section style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-          <div className="glass-panel" style={{ padding: '24px' }}>
-            <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', marginBottom: '20px' }}>Ingestion Progress</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-              <StatusStep icon={Globe} label="Website Discovery" status={chatbot ? (chatbot.status !== 'pending' ? 'complete' : 'loading') : 'idle'} />
-              <StatusStep icon={Bot} label="Domain Detection" status={chatbot?.domain ? 'complete' : (chatbot?.status === 'ingesting' ? 'loading' : 'idle')} />
-              <StatusStep icon={Sparkles} label="Behavior Profile Activation" status={chatbot?.behavior_profile ? 'complete' : (chatbot?.status === 'ingesting' ? 'loading' : 'idle')} />
-              <StatusStep icon={ShieldCheck} label="Context Grounding" status={chatbot?.status === 'ready' ? 'complete' : (chatbot?.status === 'ingesting' ? 'loading' : 'idle')} />
-            </div>
-          </div>
-
-          {chatbot?.domain && (
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="glass-panel" 
-              style={{ padding: '24px', background: 'rgba(0,198,255,0.05)', border: '1px solid rgba(0,198,255,0.2)' }}
-            >
-              <h3 style={{ fontSize: '12px', fontWeight: 800, color: '#00C6FF', textTransform: 'uppercase', marginBottom: '8px' }}>Detected Domain</h3>
-              <p style={{ fontSize: '24px', fontWeight: 800, textTransform: 'capitalize' }}>{chatbot.domain}</p>
-              <p style={{ fontSize: '13px', color: '#94a3b8', marginTop: '8px' }}>Behavior profile for <b>{chatbot.domain}</b> has been activated.</p>
-            </motion.div>
-          )}
-        </section>
-
-        {/* RIGHT: Live Preview */}
-        <section className="glass-panel" style={{ padding: '0', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div style={{ padding: '16px 24px', borderBottom: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)', display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: chatbot?.status === 'ready' ? '#10B981' : '#F59E0B' }} />
-            <span style={{ fontSize: '14px', fontWeight: 600 }}>Live Chatbot Preview</span>
-          </div>
-          
-          <div style={{ flex: 1, padding: '24px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', textAlign: 'center', gap: '16px' }}>
-            {chatbot?.status === 'ready' ? (
-              <>
-                <div style={{ width: '64px', height: '64px', borderRadius: '20px', background: 'linear-gradient(135deg, #00C6FF, #0072FF)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <MessageCircle size={32} color="#050816" />
-                </div>
-                <div>
-                  <h4 style={{ fontSize: '18px', fontWeight: 700 }}>{chatbot.name}</h4>
-                  <p style={{ fontSize: '14px', color: '#64748b' }}>Ready to assist your users.</p>
-                </div>
-                <button 
-                  onClick={() => window.location.href = `/chat?chatbot_id=${chatbot.id}`}
-                  style={{ padding: '10px 20px', borderRadius: '10px', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', fontSize: '14px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '8px' }}
-                >
-                  Open Full Chat <ArrowRight size={16} />
-                </button>
-              </>
-            ) : (
-              <div style={{ opacity: 0.3 }}>
-                <Bot size={48} style={{ marginBottom: '12px' }} />
-                <p>Preview will be available once ingestion is complete.</p>
-              </div>
-            )}
-          </div>
-        </section>
-
-      </div>
-    </div>
-  );
-}
-
-function StatusStep({ icon: Icon, label, status }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-      <div style={{ 
-        width: '32px', height: '32px', borderRadius: '8px', 
-        background: status === 'complete' ? 'rgba(16,185,129,0.1)' : 'rgba(255,255,255,0.03)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        color: status === 'complete' ? '#10B981' : '#64748b'
-      }}>
-        {status === 'loading' ? <Loader2 size={16} className="animate-spin" /> : <Icon size={16} />}
-      </div>
-      <span style={{ fontSize: '14px', color: status === 'idle' ? '#475569' : '#fff', fontWeight: status === 'complete' ? 600 : 400 }}>{label}</span>
-      {status === 'complete' && <CheckCircle2 size={16} color="#10B981" style={{ marginLeft: 'auto' }} />}
+        </motion.div>
+      )}
     </div>
   );
 }

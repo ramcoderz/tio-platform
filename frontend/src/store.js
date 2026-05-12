@@ -1,12 +1,26 @@
 import { create } from 'zustand';
 
+// Generate a stable session ID tied to a specific user account + chatbot
+export function makeSessionId(userId, chatbotId) {
+  return `u${userId}-c${chatbotId || 'global'}`;
+}
+
 export const useChatStore = create((set) => ({
+  // Default: random fallback until user logs in
   sessionId: localStorage.getItem("tio_session_id") || `session-${Math.random().toString(36).slice(2)}`,
   messages: [],
   isTyping: false,
+
+  // Called on login — binds session to user account
+  setSessionFromUser: (userId, chatbotId) => set(() => {
+    const id = makeSessionId(userId, chatbotId);
+    localStorage.setItem("tio_session_id", id);
+    return { sessionId: id, messages: [] };
+  }),
+
   setSessionId: (id) => set({ sessionId: id }),
-  setMessages: (updater) => set((state) => ({ 
-    messages: typeof updater === 'function' ? updater(state.messages) : updater 
+  setMessages: (updater) => set((state) => ({
+    messages: typeof updater === 'function' ? updater(state.messages) : updater
   })),
   setTyping: (status) => set({ isTyping: status }),
   clearSession: () => set((state) => {
@@ -15,6 +29,7 @@ export const useChatStore = create((set) => ({
     return { sessionId: next, messages: [], isTyping: false };
   })
 }));
+
 
 export const useDocumentStore = create((set) => ({
   uploads: JSON.parse(localStorage.getItem("tio_uploads") || "[]"),

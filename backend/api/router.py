@@ -161,17 +161,120 @@ async def chat_history(session_id: str, db: AsyncSession = Depends(get_db)):
         return []
     return await get_all_history(db, conv.id)
 
-# --- Admin ---
+class SkillReq(BaseModel):
+    skill_id: str
+    chatbot_id: int
+    session_id: str
+    args: dict = {}
+
+@api_router.post("/skills/execute")
+async def execute_skill(payload: SkillReq, db: AsyncSession = Depends(get_db)):
+    chatbot = await db.get(Chatbot, payload.chatbot_id)
+    if not chatbot:
+        raise HTTPException(status_code=404, detail="Chatbot not found")
+    
+    from backend.vectorstore.service import async_retrieve
+    
+    # Get context from chatbot knowledge
+    query = payload.args.get("query", "general information")
+    chunks = await async_retrieve(query, top_k=5, chatbot_id=payload.chatbot_id)
+    context = "\n".join([c.text for c in chunks])
+    
+    skill_map = {
+        "tourism_planner": ("backend.agents.specialized_agents", "tourism_planner_skill", lambda: (chatbot.name, context)),
+        "course_finder": ("backend.agents.specialized_agents", "course_finder_skill", lambda: (query, context)),
+        "dept_navigator": ("backend.agents.specialized_agents", "dept_navigator_skill", lambda: (query, context)),
+        "api_assistant": ("backend.agents.specialized_agents", "api_assistant_skill", lambda: (query, context)),
+        "doc_summarizer": ("backend.agents.specialized_agents", "doc_summarizer_skill", lambda: (context,)),
+    }
+    
+    if payload.skill_id not in skill_map:
+        raise HTTPException(status_code=400, detail=f"Unknown skill: {payload.skill_id}")
+    
+    module_path, func_name, args_fn = skill_map[payload.skill_id]
+    
+    import importlib
+    mod = importlib.import_module(module_path)
+    skill_fn = getattr(mod, func_name)
+    answer = await skill_fn(*args_fn())
+    
+    # Save to conversation history
+    conv = await get_or_create_conversation(db, payload.session_id, payload.chatbot_id)
+    await add_message(db, conv.id, "assistant", answer, citations={"skill": payload.skill_id})
+    
+    return {"answer": answer}
+
 
 @api_router.get("/admin/stats")
 async def admin_stats(db: AsyncSession = Depends(get_db)):
-    chatbot_count = (await db.execute(select(func.count(Chatbot.id)))).scalar()
-    doc_count = (await db.execute(select(func.count(UploadedDocument.id)))).scalar()
-    msg_count = (await db.execute(select(func.count(Message.id)))).scalar()
-    
+    chatbot_count   = (await db.execute(select(func.count(Chatbot.id)))).scalar()
+    ready_count     = (await db.execute(select(func.count(Chatbot.id)).where(Chatbot.status == "ready"))).scalar()
+    doc_count       = (await db.execute(select(func.count(UploadedDocument.id)))).scalar()
+    msg_count       = (await db.execute(select(func.count(Message.id)))).scalar()
+    conv_count      = (await db.execute(select(func.count(Conversation.id)))).scalar()
+
     return {
-        "total_chatbots": chatbot_count,
-        "total_documents": doc_count,
-        "total_messages": msg_count,
-        "system_status": "operational"
+        "total_chatbots":      chatbot_count,
+        "ready_chatbots":      ready_count,
+        "total_documents":     doc_count,
+        "total_messages":      msg_count,
+        "total_conversations": conv_count,
+        "system_status":       "operational",
     }
+
+@api_router.get("/admin/documents")
+async def list_all_documents(db: AsyncSession = Depends(get_db)):
+    stmt = select(UploadedDocument).order_by(UploadedDocument.created_at.desc())
+    docs = (await db.execute(stmt)).scalars().all()
+    return [
+        {
+            "id":         d.id,
+            "filename":   d.filename,
+            "type":       d.content_type,
+            "chatbot_id": d.chatbot_id,
+            "created_at": d.created_at.isoformat() if d.created_at else None,
+        }
+        for d in docs
+    ]
+
+@api_router.delete("/admin/documents/{doc_id}")
+async def delete_document(doc_id: int, db: AsyncSession = Depends(get_db)):
+    doc = await db.get(UploadedDocument, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if doc.source_path and os.path.exists(doc.source_path):
+        try: os.remove(doc.source_path)
+        except: pass
+    await db.delete(doc)
+    await db.commit()
+    return {"status": "deleted"}
+
+@api_router.post("/admin/cleanup/all")
+async def cleanup_all(db: AsyncSession = Depends(get_db)):
+    await db.execute(delete(Message))
+    await db.execute(delete(Conversation))
+    await db.execute(delete(UploadedDocument))
+    await db.commit()
+    return {"status": "purged"}
+
+@api_router.get("/admin/config/{key}")
+async def get_config(key: str, db: AsyncSession = Depends(get_db)):
+    from backend.models.entities import SystemConfig
+    cfg = (await db.execute(select(SystemConfig).where(SystemConfig.key == key))).scalar_one_or_none()
+    if not cfg:
+        return {"key": key, "value": None}
+    return {"key": cfg.key, "value": cfg.value}
+
+@api_router.post("/admin/config")
+async def set_config(payload: dict, db: AsyncSession = Depends(get_db)):
+    from backend.models.entities import SystemConfig
+    key = payload.get("key")
+    value = str(payload.get("value", ""))
+    cfg = (await db.execute(select(SystemConfig).where(SystemConfig.key == key))).scalar_one_or_none()
+    if cfg:
+        cfg.value = value
+    else:
+        cfg = SystemConfig(key=key, value=value)
+        db.add(cfg)
+    await db.commit()
+    return {"key": key, "value": value}

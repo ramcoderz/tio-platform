@@ -3,20 +3,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.entities import Conversation, EmbeddingMetadata, Message, SessionMemory, UploadedDocument
 
 
-async def get_or_create_conversation(db: AsyncSession, session_id: str, chatbot_id: int) -> Conversation:
+async def get_or_create_conversation(
+    db: AsyncSession,
+    session_id: str,
+    chatbot_id: int,
+    user_id: int | None = None,
+) -> Conversation:
     row = (await db.execute(
         select(Conversation).where(
-            Conversation.session_id == session_id, 
+            Conversation.session_id == session_id,
             Conversation.chatbot_id == chatbot_id
         )
     )).scalar_one_or_none()
     if row:
         return row
-    row = Conversation(session_id=session_id, chatbot_id=chatbot_id)
+    row = Conversation(session_id=session_id, chatbot_id=chatbot_id, user_id=user_id)
     db.add(row)
     await db.commit()
     await db.refresh(row)
     return row
+
 
 
 async def get_conversation_by_session(db: AsyncSession, session_id: str, chatbot_id: int) -> Conversation | None:

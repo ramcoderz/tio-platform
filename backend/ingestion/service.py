@@ -96,8 +96,57 @@ async def ingest_file(chatbot_id: int, file: UploadFile, db: AsyncSession) -> di
         if path.exists(): path.unlink()
         raise HTTPException(status_code=400, detail=str(e))
 
+async def download_document(url: str) -> Path | None:
+    """Safely download a document with security checks."""
+    import httpx
+    import tempfile
+    
+    # 1. Validation & Constraints
+    MAX_SIZE = 25 * 1024 * 1024 # 25MB
+    ALLOWED_EXTENSIONS = {'.pdf', '.docx', '.txt', '.md'}
+    ALLOWED_MIMES = {
+        'application/pdf', 
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'text/plain', 'text/markdown', 'application/octet-stream' # Some servers serve docs as octet-stream
+    }
+    
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as client:
+            # Head request to check size/type
+            head = await client.head(url)
+            
+            # Size Check
+            size = int(head.headers.get("content-length", 0))
+            if size > MAX_SIZE:
+                logger.warning(f"File too large: {url} ({size} bytes)")
+                return None
+            
+            # Type Check
+            mime = head.headers.get("content-type", "").split(';')[0].lower()
+            ext = Path(urlparse(url).path).suffix.lower()
+            
+            if ext not in ALLOWED_EXTENSIONS:
+                logger.warning(f"Blocked extension: {ext} for {url}")
+                return None
+                
+            # Actual Download
+            resp = await client.get(url)
+            resp.raise_for_status()
+            
+            # Isolated temp folder
+            temp_dir = Path(tempfile.gettempdir()) / "tio_ingestion"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            
+            temp_path = temp_dir / f"{uuid4()}{ext}"
+            temp_path.write_bytes(resp.content)
+            return temp_path
+            
+    except Exception as e:
+        logger.error(f"Download failed for {url}: {e}")
+        return None
+
 async def ingest_website(chatbot_id: int, url: str):
-    """Background task to ingest website content."""
+    """Background task to ingest website content and linked documents."""
     from backend.db.session import SessionLocal
     async with SessionLocal() as db:
         try:
@@ -107,10 +156,14 @@ async def ingest_website(chatbot_id: int, url: str):
             chatbot.status = "ingesting"
             await db.commit()
             
-            # Discover pages
-            pages = await scraper.discover_pages(url, limit=settings.top_k * 2) # Use settings for limit
+            # Discover assets with adaptive depth
+            is_complex = any(k in url.lower() for k in [".edu", "university", "college", "tourism", "wonderland"])
+            depth = 2 if is_complex else 1
+            pages, docs = await scraper.discover_assets(url, limit=settings.top_k * 4, depth=depth) 
             
             all_text = ""
+            
+            # 1. Process HTML Pages
             for page_url in pages:
                 # Deduplication check
                 page_stmt = select(UploadedDocument).where(
@@ -118,9 +171,7 @@ async def ingest_website(chatbot_id: int, url: str):
                     UploadedDocument.source_path == page_url
                 )
                 existing_page = (await db.execute(page_stmt)).scalar_one_or_none()
-                if existing_page:
-                    logger.info(f"Skipping already ingested page: {page_url}")
-                    continue
+                if existing_page: continue
 
                 content = await scraper.extract_content(page_url)
                 if not content: continue
@@ -129,10 +180,8 @@ async def ingest_website(chatbot_id: int, url: str):
                 chunks = _chunk_text(content, page_url, chatbot_id)
                 if not chunks: continue
                 
-                # Index in vector store
                 await asyncio.to_thread(upsert_chunks, chunks)
                 
-                # Persist pseudo-document for the page
                 doc = UploadedDocument(
                     chatbot_id=chatbot_id,
                     filename=page_url.split('/')[-1] or "index",
@@ -143,17 +192,50 @@ async def ingest_website(chatbot_id: int, url: str):
                 await db.flush()
                 
                 for c in chunks:
-                    db.add(EmbeddingMetadata(
-                        document_id=doc.id,
-                        chunk_id=c["chunk_id"],
-                        text=c["text"],
-                        metadata_json=c["metadata"]
-                    ))
+                    db.add(EmbeddingMetadata(document_id=doc.id, chunk_id=c["chunk_id"], text=c["text"], metadata_json=c["metadata"]))
+            
+            # 2. Process Linked Documents
+            for doc_url in docs:
+                # Deduplication check
+                doc_stmt = select(UploadedDocument).where(
+                    UploadedDocument.chatbot_id == chatbot_id,
+                    UploadedDocument.source_path == doc_url
+                )
+                existing_doc = (await db.execute(doc_stmt)).scalar_one_or_none()
+                if existing_doc: continue
+
+                temp_path = await download_document(doc_url)
+                if not temp_path: continue
+                
+                try:
+                    content = await asyncio.to_thread(_parse_file, temp_path)
+                    if not content: continue
+                    
+                    all_text += content + "\n\n"
+                    chunks = _chunk_text(content, doc_url, chatbot_id)
+                    if not chunks: continue
+                    
+                    await asyncio.to_thread(upsert_chunks, chunks)
+                    
+                    # Persist record
+                    doc = UploadedDocument(
+                        chatbot_id=chatbot_id,
+                        filename=Path(doc_url).name or "document",
+                        source_path=doc_url,
+                        content_type="application/pdf" if doc_url.endswith('.pdf') else "application/msword"
+                    )
+                    db.add(doc)
+                    await db.flush()
+                    
+                    for c in chunks:
+                        db.add(EmbeddingMetadata(document_id=doc.id, chunk_id=c["chunk_id"], text=c["text"], metadata_json=c["metadata"]))
+                finally:
+                    if temp_path.exists(): temp_path.unlink() # Auto-clean
             
             # Domain detection & Profile activation
             domain = scraper.detect_domain(all_text, url)
             chatbot.domain = domain
-            chatbot.behavior_profile = domain # For now, 1:1 mapping
+            chatbot.behavior_profile = domain
             chatbot.status = "ready"
             
             await db.commit()

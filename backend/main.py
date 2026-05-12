@@ -37,6 +37,12 @@ async def lifespan(_: FastAPI):
         await init_db()
         logger.info("Database initialized successfully.")
         
+        # Seed starter chatbots
+        from backend.db.seed import seed_chatbots
+        from backend.db.session import SessionLocal
+        async with SessionLocal() as db:
+            await seed_chatbots(db)
+        
         # Load vector store data
         await asyncio.to_thread(initialize_vectorstore)
         logger.info("Vector store initialized.")
@@ -59,6 +65,10 @@ app.add_middleware(
 )
 app.include_router(api_router, prefix="/api")
 app.include_router(auth_router, prefix="/api/auth")
+
+from backend.api.export import export_router
+app.include_router(export_router, prefix="/api")
+
 app.include_router(websocket_router)
 
 frontend_dir = Path(__file__).resolve().parents[1] / "frontend"
