@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from pydantic import BaseModel, EmailStr
 from typing import Any
 
@@ -58,30 +58,32 @@ from jose import jwt
 
 auth_scheme = HTTPBearer()
 
-@router.get("/me")
-async def get_me(creds: HTTPAuthorizationCredentials = Depends(auth_scheme), db: AsyncSession = Depends(get_db)):
+async def get_current_user(creds: HTTPAuthorizationCredentials = Depends(auth_scheme), db: AsyncSession = Depends(get_db)) -> User:
     token = creds.credentials
     try:
         payload = decode_token(token)
         username = payload.get("sub")
         if not username:
-            raise HTTPException(status_code=401, detail="Invalid token")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
         
         stmt = select(User).where(User.username == username)
         user = (await db.execute(stmt)).scalar_one_or_none()
         if not user:
-            raise HTTPException(status_code=401, detail="User not found")
-            
-        return {
-            "id": user.id, 
-            "username": user.username, 
-            "role": user.role, 
-            "email": user.email,
-            "theme": user.theme,
-            "private_inference": bool(user.private_inference)
-        }
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+        return user
     except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+
+@router.get("/me")
+async def get_me(user: User = Depends(get_current_user)):
+    return {
+        "id": user.id, 
+        "username": user.username, 
+        "role": user.role, 
+        "email": user.email,
+        "theme": user.theme,
+        "private_inference": bool(user.private_inference)
+    }
 
 class UserUpdate(BaseModel):
     username: str | None = None
@@ -140,9 +142,8 @@ async def update_me(payload: UserUpdate, creds: HTTPAuthorizationCredentials = D
 
 @router.delete("/me")
 async def delete_account(creds: HTTPAuthorizationCredentials = Depends(auth_scheme), db: AsyncSession = Depends(get_db)):
-    token = creds.credentials
-    data = decode_token(token)
-    user_id = data.get("uid")
+    user = await get_current_user(creds, db)
+    user_id = user.id
     
     user = await db.get(User, user_id)
     if not user:
@@ -157,7 +158,7 @@ async def delete_account(creds: HTTPAuthorizationCredentials = Depends(auth_sche
     
     # Let's delete conversations explicitly just in case cascades are weak
     from backend.models.entities import Conversation
-    await db.execute(delete(Conversation).where(Conversation.user_id == user_id))
+    await db.execute(delete(Conversation).where(Conversation.session_id.like(f"u{user_id}-%")))
     
     await db.delete(user)
     await db.commit()
