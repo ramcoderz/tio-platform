@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TiO Widget — Embed Example</title>
+  <meta name="description" content="Example of embedding the TiO chatbot widget on any external page." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: #f8fafc;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #1e293b;
+    }
+
+    .demo-page {
+      max-width: 720px;
+      width: 90%;
+      text-align: center;
+    }
+
+    .demo-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 14px;
+      border-radius: 999px;
+      background: rgba(0, 114, 255, 0.08);
+      border: 1px solid rgba(0, 114, 255, 0.2);
+      color: #0072FF;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 24px;
+    }
+
+    .demo-badge::before {
+      content: '';
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #0072FF;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    h1 {
+      font-size: 42px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      margin-bottom: 16px;
+      background: linear-gradient(135deg, #0072FF, #00C6FF);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    p.subtitle {
+      font-size: 16px;
+      color: #64748b;
+      line-height: 1.7;
+      max-width: 540px;
+      margin: 0 auto 40px;
+    }
+
+    .demo-card {
+      background: #fff;
+      border-radius: 16px;
+      padding: 32px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+      border: 1px solid #e2e8f0;
+      margin-bottom: 28px;
+      text-align: left;
+    }
+
+    .demo-card h2 {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 12px;
+      color: #1e293b;
+    }
+
+    .code-block {
+      background: #0f172a;
+      color: #94a3b8;
+      border-radius: 10px;
+      padding: 18px 20px;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 13px;
+      line-height: 1.7;
+      overflow-x: auto;
+      border: 1px solid #1e293b;
+    }
+
+    .code-block .key   { color: #7dd3fc; }
+    .code-block .val   { color: #86efac; }
+    .code-block .str   { color: #fde68a; }
+    .code-block .tag   { color: #f472b6; }
+    .code-block .cmt   { color: #475569; font-style: italic; }
+
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-top: 24px;
+    }
+
+    .feature-item {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 16px;
+    }
+
+    .feature-icon {
+      font-size: 20px;
+      margin-bottom: 8px;
+    }
+
+    .feature-item h3 { font-size: 13px; font-weight: 700; margin-bottom: 4px; color: #1e293b; }
+    .feature-item p  { font-size: 12px; color: #64748b; line-height: 1.5; }
+
+    footer {
+      margin-top: 32px;
+      font-size: 12px;
+      color: #94a3b8;
+    }
+
+    footer a { color: #0072FF; text-decoration: none; }
+  </style>
+</head>
+<body>
+
+<div class="demo-page">
+  <div class="demo-badge">⚡ Embeddable Widget</div>
+
+  <h1>TiO Widget<br>on Any Site</h1>
+  <p class="subtitle">
+    Drop a single <code style="background:#f1f5f9;padding:2px 6px;border-radius:4px;font-size:13px;">&lt;script&gt;</code> tag
+    onto any HTML page. Your TiO chatbot appears as a floating assistant — no iframes, no cookies, no tracking.
+  </p>
+
+  <div class="demo-card">
+    <h2>1. Add the widget script to your page</h2>
+    <div class="code-block"><span class="cmt">&lt;!-- Place before &lt;/body&gt; --&gt;</span>
+<span class="tag">&lt;script</span>
+  <span class="key">src</span>=<span class="str">"http://localhost:8888/widget.js"</span>
+  <span class="key">data-chatbot-id</span>=<span class="str">"1"</span>
+  <span class="key">data-domain</span>=<span class="str">"tourism"</span>
+  <span class="key">data-title</span>=<span class="str">"Park Assistant"</span>
+  <span class="key">data-accent</span>=<span class="str">"#00C6FF"</span>
+  <span class="key">defer</span>
+<span class="tag">&gt;&lt;/script&gt;</span></div>
+  </div>
+
+  <div class="demo-card">
+    <h2>2. Or use the React component directly</h2>
+    <div class="code-block"><span class="cmt">// In any React component</span>
+<span class="key">import</span> ChatWidget <span class="key">from</span> <span class="str">'./components/ChatWidget'</span>;
+
+<span class="tag">&lt;ChatWidget</span>
+  <span class="key">chatbotId</span>=<span class="val">{1}</span>
+  <span class="key">domain</span>=<span class="str">"tourism"</span>
+  <span class="key">title</span>=<span class="str">"Park Assistant"</span>
+  <span class="key">apiBase</span>=<span class="str">"http://localhost:8888"</span>
+  <span class="key">accentColor</span>=<span class="str">"#00C6FF"</span>
+<span class="tag">/&gt;</span></div>
+  </div>
+
+  <div class="feature-grid">
+    <div class="feature-item">
+      <div class="feature-icon">🔌</div>
+      <h3>No Build Step</h3>
+      <p>Single script tag. Works on WordPress, Webflow, plain HTML — anything.</p>
+    </div>
+    <div class="feature-item">
+      <div class="feature-icon">⚡</div>
+      <h3>Streaming</h3>
+      <p>WebSocket-based token streaming. Responses appear instantly, word by word.</p>
+    </div>
+    <div class="feature-item">
+      <div class="feature-icon">🔒</div>
+      <h3>Isolated Sessions</h3>
+      <p>Each visitor gets a unique session. No data leaks between users.</p>
+    </div>
+    <div class="feature-item">
+      <div class="feature-icon">🌍</div>
+      <h3>Domain-Aware</h3>
+      <p>Pass <code>data-domain</code> to activate the right behavior profile and quick actions.</p>
+    </div>
+    <div class="feature-item">
+      <div class="feature-icon">📱</div>
+      <h3>Mobile Ready</h3>
+      <p>Responsive layout. Works on phones, tablets, and desktops without configuration.</p>
+    </div>
+    <div class="feature-item">
+      <div class="feature-icon">🏠</div>
+      <h3>100% Local</h3>
+      <p>All inference runs on your server via Ollama. No cloud. No API keys needed.</p>
+    </div>
+  </div>
+
+  <footer>
+    Built with <a href="/">TiO</a> · FastAPI · ChromaDB · Ollama ·
+    <a href="https://github.com" target="_blank">View on GitHub</a>
+  </footer>
+</div>
+
+<!-- ─── TiO Live Widget Demo ─────────────────────────────────────────── -->
+<!--
+  The actual floating widget is rendered by the React app.
+  To test it here, open http://localhost:8888 and navigate to a chatbot's chat page.
+  The ChatWidget component is available in frontend/src/components/ChatWidget.jsx.
+-->
+
+</body>
+</html>

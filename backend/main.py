@@ -48,7 +48,9 @@ async def lifespan(_: FastAPI):
         logger.info("Vector store initialized.")
         
         # Start background tasks
+        from backend.tasks.refresh_scheduler import start_refresh_scheduler
         asyncio.create_task(auto_cleanup_worker())
+        asyncio.create_task(start_refresh_scheduler())
         
         yield
     finally:

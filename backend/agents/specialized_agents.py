@@ -1,88 +1,53 @@
 from typing import Any
-from backend.llm.ollama_client import ollama_client
-from backend.config.settings import get_settings
 import json
 import re
+from backend.llm.ollama_client import ollama_client
+from backend.config.settings import get_settings
 
 settings = get_settings()
+
+# ---------------------------------------------------------------------------
+# SHARED PROMPT RULES — enforcing non-robotic, proactive behavior
+# ---------------------------------------------------------------------------
+PROACTIVE_RULES = """
+========================================================
+CRITICAL ENTITY RULES
+========================================================
+- NEVER generate placeholder-style entities such as [Cultural Institution], [Landmark], [Location], etc.
+- ABSOLUTELY NO BRACKETS [ ] or template variables in your response.
+- If specific names are missing from the context, admit it naturally: "The specific names were not identified in the indexed sources."
+- NEVER fabricate names or landmarks.
+
+========================================================
+IDENTITY & TONE RULES
+========================================================
+- Never say "As an AI", "I'd be happy to help", or "As a [Role]".
+- Speak with confidence. Make reasonable assumptions for vague queries.
+- Be proactive: suggest logically related next steps or information.
+"""
+
 
 async def compare_documents(query: str, chunks: list) -> str:
     """Side-by-side comparison of multiple knowledge sources."""
     if len(chunks) < 2:
-        return "Insufficient sources for comparative analysis. Please ingest more documents."
+        return "I need more than one source to provide a side-by-side comparison. Please ingest additional documents."
     
     prompt = f"""
-    You are a Comparative Analysis Agent. Analyze the following information from different sources.
-    Provide a side-by-side comparison.
+    Compare the following sources directly based on the query.
+    {PROACTIVE_RULES}
     
-    Query: {query}
+    QUERY: {query}
     
-    Sources:
+    SOURCES:
     {json.dumps([{'doc': c.document, 'text': c.text} for c in chunks], indent=2)}
     
-    Output Format:
-    1. **Key Themes**: Shared topics across sources.
-    2. **Point-by-Point Comparison**: A table-like breakdown of differences.
-    3. **Contradictions**: Any conflicting information.
-    4. **Recommendation**: Synthesis based on the most credible data.
+    OUTPUT FORMAT:
+    1. **Direct Comparison**: A table or structured list showing differences.
+    2. **Contradictions**: Any conflicting points between sources.
+    3. **Recommendation**: Which source or path is best based on the data.
     """
     return await ollama_client.generate(prompt, model=settings.ollama_model)
 
-async def extract_structured_data(text: str) -> dict:
-    """Extracts business metrics and entities into a structured JSON format."""
-    prompt = f"""
-    You are a Structured Extraction Agent. Extract key business metrics, entities, and dates from the following text.
-    Return ONLY a valid JSON object with the following schema:
-    {{
-        "entities": ["list", "of", "names"],
-        "metrics": {{ "name": "value" }},
-        "dates": ["list", "of", "dates"],
-        "confidence": 0.0-1.0
-    }}
-    
-    Text: {text}
-    """
-    raw = await ollama_client.generate(prompt, model=settings.ollama_model)
-    try:
-        # Simple extraction logic
-        match = re.search(r"(\{.*\})", raw, re.DOTALL)
-        if match:
-            return json.loads(match.group(1))
-        return {"error": "Failed to parse JSON", "raw": raw}
-    except Exception as e:
-        return {"error": str(e)}
-
-async def orchestrate_tasks(text: str, session_id: str | None = None, db: Any = None) -> list[dict]:
-    """Identifies and logs action items from conversational or document text."""
-    prompt = f"""
-    You are a Task Orchestration Agent. Identify all action items, owners, and deadlines from the text.
-    Return ONLY a valid JSON list of objects:
-    [
-        {{ "task": "description", "owner": "name or 'Unknown'", "deadline": "date or 'Unspecified'" }}
-    ]
-    
-    Text: {text}
-    """
-    raw = await ollama_client.generate(prompt, model=settings.ollama_model)
-    try:
-        match = re.search(r"(\[.*\])", raw, re.DOTALL)
-        if match:
-            tasks_data = json.loads(match.group(1))
-            if db and session_id:
-                from backend.models.entities import Task
-                for t in tasks_data:
-                    task_obj = Task(
-                        session_id=session_id,
-                        description=t.get("task", ""),
-                        owner=t.get("owner"),
-                        deadline=t.get("deadline")
-                    )
-                    db.add(task_obj)
-                await db.commit()
-            return tasks_data
-        return []
-    except Exception:
-        return []
 
 async def tourism_planner_skill(place_name: str, website_context: str) -> str:
     """Specialized skill for creating a tourism plan based on reviews and site data."""
@@ -95,99 +60,267 @@ async def tourism_planner_skill(place_name: str, website_context: str) -> str:
     
     # 2. Generate the plan
     prompt = f"""
-    You are a Premium Tourism Planner. Your goal is to create a detailed, high-value travel plan for: {place_name}
+    Create an optimised travel itinerary and guide for: {place_name}
+    {PROACTIVE_RULES}
     
     WEBSITE CONTEXT (Official details):
     {website_context}
     
-    VISITOR REVIEWS & COMMUNITY FEEDBACK:
-    {reviews_text if reviews_text else "No recent reviews found. Plan based on official details."}
+    COMMUNITY FEEDBACK (Visitor reviews):
+    {reviews_text if reviews_text else "No recent reviews found."}
     
-    PLANNING REQUIREMENTS:
-    - Create a logical itinerary (1-day or multi-day as appropriate).
-    - Include "Pro Tips" based on visitor feedback (e.g., best times to visit, hidden gems).
-    - Add a "Honest Expectations" section based on reviews (e.g., "Lines can be long on weekends").
-    - Highlight specific attractions mentioned in both official data and reviews.
+    REQUIREMENTS:
+    - Generate a logical daily itinerary based on the context.
+    - Include "Pro Tips" (best times, hidden spots).
+    - Include "Honest Expectations" (wait times, costs).
+    - Synthesise official data with community feedback.
     
-    STYLE: Creative, welcoming, and recommendation-focused.
+    STYLE: Enthusiastic, practical, and itinerary-focused.
     """
     return await ollama_client.generate(prompt, model=settings.ollama_model)
 
 
 async def course_finder_skill(career_goal: str, website_context: str) -> str:
     """Education skill: match career goals to courses from context."""
-    prompt = f"""You are an Academic Advisor. A student has a career goal and needs course recommendations.
+    prompt = f"""Recommend specific programs and courses that lead to a career in: {career_goal}
+    {PROACTIVE_RULES}
 
-CAREER GOAL: {career_goal}
-
-AVAILABLE COURSE/PROGRAM INFORMATION:
-{website_context if website_context else "No specific course data available. Provide general guidance."}
-
-REQUIREMENTS:
-- Recommend the most relevant courses/programs based on the goal.
-- Explain how each recommendation aligns with the career path.
-- Include prerequisites or admission requirements if mentioned.
-- Suggest a logical study sequence if multiple courses apply.
-- Be encouraging and student-friendly.
-
-Format the response with clear headers and bullet points."""
+    CONTEXT:
+    {website_context if website_context else "No specific course data available."}
+    
+    REQUIREMENTS:
+    - Recommend at least 2-3 specific courses or programs from the context.
+    - Explain the "Why" — how they align with the career goal.
+    - List prerequisites, deadlines, and next steps immediately.
+    - Suggest a logical sequence (Foundation -> Specialist).
+    
+    STYLE: Encouraging, student-focused, and direct.
+    """
     return await ollama_client.generate(prompt, model=settings.ollama_model)
 
 
 async def dept_navigator_skill(symptoms: str, website_context: str) -> str:
     """Medical skill: route users to the right department based on symptoms."""
-    prompt = f"""You are a Medical Reception Assistant. Help a patient find the right department.
+    prompt = f"""Identify the most appropriate medical department for the following concern.
+    {PROACTIVE_RULES}
 
-PATIENT CONCERN: {symptoms}
-
-HOSPITAL/CLINIC DEPARTMENTS AND SERVICES:
-{website_context if website_context else "No specific department data available."}
-
-REQUIREMENTS:
-- Suggest the most relevant department(s) based on the concern.
-- Explain briefly why that department is appropriate.
-- Include any mentioned contact details, hours, or location.
-- If the concern sounds urgent, recommend visiting the Emergency department.
-- Add a disclaimer: "This is for guidance only. Please consult with medical staff."
-
-Format the response clearly with department names highlighted."""
+    CONCERN: {symptoms}
+    
+    HOSPITAL DATA:
+    {website_context if website_context else "No specific department data available."}
+    
+    REQUIREMENTS:
+    - State the primary department recommendation immediately.
+    - Provide contact details, hours, and location if available in the context.
+    - If symptoms sound severe, lead with: "Please visit Emergency or call [number] immediately."
+    - Synthesise routing logic — do not just list departments.
+    
+    STYLE: Professional, direct, and safety-aware.
+    """
     return await ollama_client.generate(prompt, model=settings.ollama_model)
 
 
 async def api_assistant_skill(integration_goal: str, website_context: str) -> str:
     """Developer skill: generate integration boilerplate from docs."""
-    prompt = f"""You are a Developer Relations Engineer. Help a developer integrate with this platform.
+    prompt = f"""Provide a complete integration guide for: {integration_goal}
+    {PROACTIVE_RULES}
 
-INTEGRATION GOAL: {integration_goal}
-
-API/SDK DOCUMENTATION:
-{website_context if website_context else "No specific API docs available."}
-
-REQUIREMENTS:
-- Provide a step-by-step integration guide.
-- Include working code snippets (Python, JavaScript, or cURL).
-- Highlight authentication requirements.
-- List relevant endpoints with HTTP methods.
-- Include error handling best practices.
-- Be concise and technical — no fluff.
-
-Format with code blocks and clear section headers."""
+    DOCUMENTATION CONTEXT:
+    {website_context if website_context else "No specific API docs available."}
+    
+    REQUIREMENTS:
+    - Provide working code snippets immediately.
+    - Detail authentication (Bearer, API Key) and base URLs.
+    - List the specific endpoints and HTTP methods required.
+    - Include a "Common Pitfalls" section.
+    
+    STYLE: Technical, concise, no marketing fluff.
+    """
     return await ollama_client.generate(prompt, model=settings.ollama_model)
 
 
 async def doc_summarizer_skill(website_context: str) -> str:
     """General skill: synthesize documents into key points."""
-    prompt = f"""You are a Knowledge Synthesizer. Distill the following information into a concise, actionable summary.
+    prompt = f"""Distill this content into its 5 most critical insights.
+    {PROACTIVE_RULES}
 
-DOCUMENTS AND CONTEXT:
-{website_context if website_context else "No documents available to summarize."}
-
-REQUIREMENTS:
-- Extract the top 5-7 key insights.
-- Group findings by theme if applicable.
-- Highlight any important dates, deadlines, or action items.
-- Note any gaps or missing information.
-- Keep the summary under 400 words.
-
-Format with numbered key points and a brief conclusion."""
+    CONTEXT:
+    {website_context if website_context else "No documents available to summarize."}
+    
+    REQUIREMENTS:
+    - Lead with the most important takeaway (TL;DR).
+    - Group insights into logical themes.
+    - Extract dates, deadlines, and entities into a separate list.
+    - Keep it under 300 words.
+    
+    STYLE: Balanced, professional, and dense.
+    """
     return await ollama_client.generate(prompt, model=settings.ollama_model)
+
+
+# --- New Skills ---
+
+async def ride_optimizer_skill(query: str, website_context: str) -> str:
+    """Tourism: Optimize attraction visits."""
+    prompt = f"""Provide an optimized visit sequence for these attractions/rides: {query}
+    {PROACTIVE_RULES}
+    
+    CONTEXT: {website_context}
+    
+    REQUIREMENTS:
+    - Order the visits to minimize wait times or walking overlap.
+    - Suggest the best time of day for each.
+    - Mention 'Fast Pass' or similar options if found.
+    """
+    return await ollama_client.generate(prompt, model=settings.ollama_model)
+
+async def admission_assistant_skill(query: str, website_context: str) -> str:
+    """Education: Application guidance."""
+    prompt = f"""Provide step-by-step application guidance for: {query}
+    {PROACTIVE_RULES}
+    
+    CONTEXT: {website_context}
+    
+    REQUIREMENTS:
+    - List every required document found in the context.
+    - State deadlines clearly (Bold them).
+    - Provide the direct application link or contact if available.
+    """
+    return await ollama_client.generate(prompt, model=settings.ollama_model)
+
+async def scholarship_helper_skill(query: str, website_context: str) -> str:
+    """Education: Financial aid finder."""
+    prompt = f"""Identify scholarship and financial aid opportunities for: {query}
+    {PROACTIVE_RULES}
+    
+    CONTEXT: {website_context}
+    
+    REQUIREMENTS:
+    - List specific scholarships with their eligibility criteria.
+    - State the award amounts and deadlines.
+    - Provide application steps.
+    """
+    return await ollama_client.generate(prompt, model=settings.ollama_model)
+
+async def appointment_guidance_skill(query: str, website_context: str) -> str:
+    """Medical: Booking guidance."""
+    prompt = f"""Guide the user on how to book an appointment for: {query}
+    {PROACTIVE_RULES}
+    
+    CONTEXT: {website_context}
+    
+    REQUIREMENTS:
+    - Provide the central booking number or link.
+    - Detail what the user needs to bring (ID, insurance, etc.).
+    - List available time slots or office hours if mentioned.
+    """
+    return await ollama_client.generate(prompt, model=settings.ollama_model)
+
+async def insurance_assistant_skill(query: str, website_context: str) -> str:
+    """Medical: Coverage details."""
+    prompt = f"""Clarify insurance coverage and billing for: {query}
+    {PROACTIVE_RULES}
+    
+    CONTEXT: {website_context}
+    
+    REQUIREMENTS:
+    - List accepted insurance providers found in the context.
+    - Explain the billing process or co-pay requirements.
+    - Be precise — do not guess if not in the context.
+    """
+    return await ollama_client.generate(prompt, model=settings.ollama_model)
+
+async def integration_helper_skill(query: str, website_context: str) -> str:
+    """Developer: Complex integration architecture."""
+    prompt = f"""Design a system integration flow for: {query}
+    {PROACTIVE_RULES}
+    
+    CONTEXT: {website_context}
+    
+    REQUIREMENTS:
+    - Focus on webhooks, event flows, and error handling.
+    - Provide a sequence diagram or logic flow (in Markdown).
+    - Detail security best practices (retry logic, signature verification).
+    """
+    return await ollama_client.generate(prompt, model=settings.ollama_model)
+
+async def sdk_guide_skill(query: str, website_context: str) -> str:
+    """Developer: SDK setup."""
+    prompt = f"""Provide a setup guide for the SDK: {query}
+    {PROACTIVE_RULES}
+    
+    CONTEXT: {website_context}
+    
+    REQUIREMENTS:
+    - Show installation commands (npm, pip, etc.).
+    - Show the initialization code block.
+    - Detail 3 common SDK functions and their parameters.
+    """
+    return await ollama_client.generate(prompt, model=settings.ollama_model)
+
+async def shopping_guide_skill(query: str, website_context: str) -> str:
+    """Ecommerce: Product recommendation and comparison."""
+    prompt = f"""Compare the best product options for: {query}
+    {PROACTIVE_RULES}
+    
+    CONTEXT: {website_context}
+    
+    REQUIREMENTS:
+    - Use a Markdown table to compare 3-5 products.
+    - Categories: Product Name, Price, Key Feature, Best For.
+    - Recommend the best overall choice with a reason.
+    """
+    return await ollama_client.generate(prompt, model=settings.ollama_model)
+
+
+# ---------------------------------------------------------------------------
+# LEGACY / UTILITY AGENTS (to be kept for backend processing)
+# ---------------------------------------------------------------------------
+
+async def extract_structured_data(text: str) -> dict:
+    """Extracts business metrics and entities into a structured JSON format."""
+    prompt = f"""
+    Extract key business metrics, entities, and dates from the following text.
+    Return ONLY a valid JSON object.
+    
+    Schema:
+    {{
+        "entities": ["names"],
+        "metrics": {{ "key": "val" }},
+        "dates": ["YYYY-MM-DD"],
+        "confidence": 0.0-1.0
+    }}
+    
+    Text: {text}
+    """
+    raw = await ollama_client.generate(prompt, model=settings.ollama_model)
+    try:
+        match = re.search(r"(\{.*\})", raw, re.DOTALL)
+        if match: return json.loads(match.group(1))
+        return {}
+    except: return {}
+
+
+async def orchestrate_tasks(text: str, session_id: str | None = None, db: Any = None) -> list[dict]:
+    """Identifies and logs action items from conversational or document text."""
+    prompt = f"""
+    Identify all action items, owners, and deadlines from the text.
+    Return ONLY a valid JSON list of objects:
+    [
+        {{ "task": "description", "owner": "name", "deadline": "date" }}
+    ]
+    
+    Text: {text}
+    """
+    raw = await ollama_client.generate(prompt, model=settings.ollama_model)
+    try:
+        match = re.search(r"(\[.*\])", raw, re.DOTALL)
+        if not match: return []
+        tasks_data = json.loads(match.group(1))
+        if db and session_id:
+            from backend.models.entities import Task
+            for t in tasks_data:
+                db.add(Task(session_id=session_id, description=t.get("task", ""), owner=t.get("owner"), deadline=t.get("deadline")))
+            await db.commit()
+        return tasks_data
+    except: return []

@@ -50,32 +50,32 @@ export default function RegisterPage() {
       }} />
 
       <motion.div
-        initial={{ opacity: 0, y: 28 }}
+        initial={{ opacity: 0, y: 32 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.45, ease: 'easeOut' }}
-        className="glass-panel"
-        style={{ width: '100%', maxWidth: '440px', padding: '48px 40px' }}
+        transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+        className="glass-panel-glow"
+        style={{ width: '100%', maxWidth: '420px', padding: '40px', position: 'relative', zIndex: 10 }}
       >
         {/* Header */}
-        <div style={{ marginBottom: '36px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+        <div style={{ marginBottom: '32px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
             <div style={{
-              width: '40px', height: '40px', borderRadius: '10px',
-              background: 'linear-gradient(135deg, var(--accent-violet), var(--accent-cyan))',
+              width: '36px', height: '36px', borderRadius: '10px',
+              background: 'linear-gradient(135deg, var(--accent-violet), var(--accent-blue))',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: '0 0 20px rgba(124,58,237,0.4)',
+              boxShadow: '0 0 20px rgba(124,58,237,0.3)',
             }}>
-              <Zap size={20} color="#fff" />
+              <Zap size={18} color="#fff" />
             </div>
-            <span style={{ fontSize: '12px', color: 'var(--accent-violet)', fontFamily: 'var(--font-mono)', letterSpacing: '0.15em', fontWeight: 500 }}>
+            <span style={{ fontSize: '11px', color: 'var(--accent-violet)', fontFamily: 'var(--font-mono)', letterSpacing: '0.2em', fontWeight: 600 }}>
               TIO INTELLIGENCE CORE
             </span>
           </div>
-          <h1 style={{ fontSize: '32px', fontWeight: 700, letterSpacing: '-0.02em', marginBottom: '8px' }} className="text-gradient">
+          <h1 style={{ fontSize: '28px', fontWeight: 800, letterSpacing: '-0.03em', marginBottom: '8px' }} className="text-gradient">
             Create Account
           </h1>
-          <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-            Initialize your cognitive workspace
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            Initialize your autonomous identity.
           </p>
         </div>
 
@@ -109,13 +109,13 @@ export default function RegisterPage() {
 
           {/* Password */}
           <div className="form-group">
-            <label className="form-label">Password</label>
+            <label className="form-label">Security Key</label>
             <div style={{ position: 'relative' }}>
               <input
                 type={showPass ? 'text' : 'password'}
                 value={password}
                 onChange={e => setPassword(e.target.value)}
-                placeholder="Choose a strong password"
+                placeholder="••••••••"
                 required
                 className="form-input"
                 style={{ paddingRight: '44px' }}
@@ -127,6 +127,7 @@ export default function RegisterPage() {
                   position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)',
                   background: 'none', border: 'none', cursor: 'pointer',
                   color: 'var(--text-muted)', padding: '4px',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center'
                 }}
               >
                 {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -153,18 +154,16 @@ export default function RegisterPage() {
           <button
             type="submit"
             disabled={loading}
+            className="btn-glow"
             style={{
               width: '100%', padding: '14px',
-              background: loading ? 'rgba(124,58,237,0.4)' : 'linear-gradient(135deg, var(--accent-violet), var(--accent-cyan))',
+              background: loading ? 'rgba(124,58,237,0.4)' : 'linear-gradient(135deg, var(--accent-violet), var(--accent-blue))',
               border: 'none', borderRadius: '10px', cursor: loading ? 'not-allowed' : 'pointer',
-              color: '#fff', fontWeight: 700, fontSize: '14px', letterSpacing: '0.06em',
+              color: '#fff', fontWeight: 700, fontSize: '13px', letterSpacing: '0.1em',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-              transition: 'all 0.2s ease',
-              boxShadow: loading ? 'none' : '0 4px 20px rgba(124,58,237,0.4)',
-              marginTop: '8px',
+              marginTop: '12px',
+              boxShadow: loading ? 'none' : '0 4px 20px rgba(124,58,237,0.3)',
             }}
-            onMouseEnter={e => { if (!loading) e.currentTarget.style.filter = 'brightness(1.1)'; }}
-            onMouseLeave={e => { e.currentTarget.style.filter = 'brightness(1)'; }}
           >
             {loading ? (
               <div className="loading-spinner" style={{ width: '18px', height: '18px', borderColor: 'rgba(255,255,255,0.3)', borderTopColor: '#fff' }} />

@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     chroma_dir: str = "data/chroma"
     embedding_model: str = "all-MiniLM-L6-v2"
     top_k: int = 5
-    chunk_size: int = 1000
-    chunk_overlap: int = 150
+    chunk_size: int = 2200    # ~550 tokens target (section-aware chunking)
+    chunk_overlap: int = 320  # ~80 tokens overlap
     llm_provider: str = "ollama"
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = "llama3"

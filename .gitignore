@@ -70,3 +70,12 @@ RUN_GUIDE.md
 TODO.md
 final_report.md
 college_project_report.md
+COLLEGE_REPORT.md
+REPORT.md
+*.pdf
+*.docx
+uploads/
+vector_cache/
+models/
+.brain/
+.system_generated/

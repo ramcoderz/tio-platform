@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
+from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
@@ -120,6 +120,32 @@ async def list_chatbot_files(chatbot_id: int, db: AsyncSession = Depends(get_db)
         })
     return res
 
+@api_router.post("/chatbots/{chatbot_id}/reingest")
+async def reingest_chatbot(chatbot_id: int, background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
+    chatbot = await db.get(Chatbot, chatbot_id)
+    if not chatbot:
+        raise HTTPException(status_code=404, detail="Chatbot not found")
+    
+    if not chatbot.website_url:
+        raise HTTPException(status_code=400, detail="Chatbot has no website URL to re-ingest")
+
+    # 1. Clear existing documents and their chunks (DB)
+    stmt = select(UploadedDocument).where(UploadedDocument.chatbot_id == chatbot_id)
+    docs = (await db.execute(stmt)).scalars().all()
+    for d in docs:
+        await db.delete(d)
+    
+    # 2. Clear vectors
+    await asyncio.to_thread(delete_chatbot_vectors, chatbot_id)
+    
+    # 3. Update status and trigger task
+    chatbot.status = "ingesting"
+    await db.commit()
+    
+    background_tasks.add_task(ingest_website, chatbot_id, chatbot.website_url)
+    return {"status": "reingestion_started"}
+
+
 # --- Chat ---
 
 @api_router.post("/chat")
@@ -181,10 +207,30 @@ async def execute_skill(payload: SkillReq, db: AsyncSession = Depends(get_db)):
     context = "\n".join([c.text for c in chunks])
     
     skill_map = {
+        # Tourism
         "tourism_planner": ("backend.agents.specialized_agents", "tourism_planner_skill", lambda: (chatbot.name, context)),
+        "attraction_recommender": ("backend.agents.specialized_agents", "tourism_planner_skill", lambda: (query, context)), # Reusing planner for recommender
+        "ride_optimizer": ("backend.agents.specialized_agents", "ride_optimizer_skill", lambda: (query, context)),
+        
+        # Education
         "course_finder": ("backend.agents.specialized_agents", "course_finder_skill", lambda: (query, context)),
+        "admission_assistant": ("backend.agents.specialized_agents", "admission_assistant_skill", lambda: (query, context)),
+        "scholarship_helper": ("backend.agents.specialized_agents", "scholarship_helper_skill", lambda: (query, context)),
+        
+        # Medical
         "dept_navigator": ("backend.agents.specialized_agents", "dept_navigator_skill", lambda: (query, context)),
+        "appointment_guidance": ("backend.agents.specialized_agents", "appointment_guidance_skill", lambda: (query, context)),
+        "insurance_assistant": ("backend.agents.specialized_agents", "insurance_assistant_skill", lambda: (query, context)),
+        
+        # Developer
         "api_assistant": ("backend.agents.specialized_agents", "api_assistant_skill", lambda: (query, context)),
+        "integration_helper": ("backend.agents.specialized_agents", "integration_helper_skill", lambda: (query, context)),
+        "sdk_guide": ("backend.agents.specialized_agents", "sdk_guide_skill", lambda: (query, context)),
+        
+        # Ecommerce
+        "shopping_guide": ("backend.agents.specialized_agents", "shopping_guide_skill", lambda: (query, context)),
+        
+        # General
         "doc_summarizer": ("backend.agents.specialized_agents", "doc_summarizer_skill", lambda: (context,)),
     }
     
@@ -264,6 +310,12 @@ async def get_config(key: str, db: AsyncSession = Depends(get_db)):
     if not cfg:
         return {"key": key, "value": None}
     return {"key": cfg.key, "value": cfg.value}
+
+@api_router.get("/admin/monitoring")
+async def get_monitoring_stats():
+    from backend.utils.monitoring import get_stats_snapshot
+    return get_stats_snapshot()
+
 
 @api_router.post("/admin/config")
 async def set_config(payload: dict, db: AsyncSession = Depends(get_db)):

@@ -151,11 +151,15 @@ async def async_retrieve(query: str, top_k: int | None = None, chatbot_id: int |
     q_tokens = _tokenize(query)
     
     with _lock:
-        if not _rows: return []
+        if not _rows:
+            logger.warning("[RETRIEVAL] Vector store is empty — no chunks indexed yet.")
+            return []
         candidates = _rows
         if chatbot_id:
             candidates = [r for r in candidates if r.get("metadata", {}).get("chatbot_id") == chatbot_id]
-        if not candidates: return []
+        if not candidates:
+            logger.warning(f"[RETRIEVAL] No chunks for chatbot_id={chatbot_id}. Has ingestion completed?")
+            return []
 
     dense_task = asyncio.to_thread(_dense_search, q_vec, candidates)
     sparse_task = asyncio.to_thread(_sparse_search, q_tokens, candidates)
@@ -163,24 +167,40 @@ async def async_retrieve(query: str, top_k: int | None = None, chatbot_id: int |
     sparse_res = sorted(sparse_res_unsorted, key=lambda x: x[0], reverse=True)
     
     fused = []
+    q_norm = query.lower()
     for row in candidates:
         cid = row["chunk_id"]
         d_rank = next((i for i, (_, r) in enumerate(dense_res) if r["chunk_id"] == cid), None)
         s_rank = next((i for i, (_, r) in enumerate(sparse_res) if r["chunk_id"] == cid), None)
         
         score = _compute_rrf([d_rank + 1] if d_rank is not None else [], [s_rank + 1] if s_rank is not None else [])
+        
+        # Entity Boosting: If query contains entities found in this chunk
+        meta = row.get("metadata", {})
+        if isinstance(meta, dict):
+            entities = meta.get("entities", [])
+            if isinstance(entities, list):
+                for ent in entities:
+                    if str(ent).lower() in q_norm:
+                        score += 0.02  # Boost for entity match
+        
         if score > 0: fused.append((score, row))
             
     fused = sorted(fused, key=lambda x: x[0], reverse=True)[:20]
-    
+
+    if not fused:
+        logger.warning(f"[RETRIEVAL] RRF fusion returned 0 results for query={query!r} chatbot_id={chatbot_id}")
+        return []
+
     if len(fused) > 5 and len(query.split()) > 3:
         try:
             texts = [r["text"] for _, r in fused]
             scores = rerank(query, texts)
             reranked = sorted([(s, r) for s, (_, r) in zip(scores, fused)], key=lambda x: x[0], reverse=True)[:limit]
             return [RetrievedChunk(r["chunk_id"], r["text"], float(s), r["document"], r["metadata"]) for s, r in reranked]
-        except: pass
-        
+        except Exception as e:
+            logger.warning(f"[RETRIEVAL] Reranking failed, falling back to RRF: {e}")
+
     return [RetrievedChunk(r["chunk_id"], r["text"], float(s), r["document"], r["metadata"]) for s, r in fused[:limit]]
 
 def delete_chatbot_vectors(chatbot_id: int) -> None:

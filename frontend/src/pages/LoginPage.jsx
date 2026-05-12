@@ -60,32 +60,32 @@ export default function LoginPage() {
       }} />
 
       <motion.div
-        initial={{ opacity: 0, y: 28 }}
+        initial={{ opacity: 0, y: 32 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.45, ease: 'easeOut' }}
-        className="glass-panel"
-        style={{ width: '100%', maxWidth: '440px', padding: '48px 40px' }}
+        transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+        className="glass-panel-glow"
+        style={{ width: '100%', maxWidth: '420px', padding: '40px', position: 'relative', zIndex: 10 }}
       >
         {/* Header */}
-        <div style={{ marginBottom: '36px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+        <div style={{ marginBottom: '32px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
             <div style={{
-              width: '40px', height: '40px', borderRadius: '10px',
-              background: 'linear-gradient(135deg, var(--accent-blue), var(--accent-cyan))',
+              width: '36px', height: '36px', borderRadius: '10px',
+              background: 'linear-gradient(135deg, var(--accent), var(--accent-blue))',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: 'var(--shadow-glow-blue)',
+              boxShadow: '0 0 20px rgba(0,198,255,0.3)',
             }}>
-              <Zap size={20} color="#050816" />
+              <Zap size={18} color="#050816" />
             </div>
-            <span style={{ fontSize: '12px', color: 'var(--accent-cyan)', fontFamily: 'var(--font-mono)', letterSpacing: '0.15em', fontWeight: 500 }}>
+            <span style={{ fontSize: '11px', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.2em', fontWeight: 600 }}>
               TIO INTELLIGENCE CORE
             </span>
           </div>
-          <h1 style={{ fontSize: '32px', fontWeight: 700, letterSpacing: '-0.02em', marginBottom: '8px' }} className="text-gradient">
+          <h1 style={{ fontSize: '28px', fontWeight: 800, letterSpacing: '-0.03em', marginBottom: '8px' }} className="text-gradient">
             Welcome Back
           </h1>
-          <p style={{ fontSize: '14px', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-            Sign in to access your intelligence workspace
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+            Sign in to access your autonomous workspace.
           </p>
         </div>
 
@@ -107,13 +107,13 @@ export default function LoginPage() {
 
           {/* Password */}
           <div className="form-group">
-            <label className="form-label">Password</label>
+            <label className="form-label">Security Key</label>
             <div style={{ position: 'relative' }}>
               <input
                 type={showPass ? 'text' : 'password'}
                 value={password}
                 onChange={e => setPassword(e.target.value)}
-                placeholder="Enter your password"
+                placeholder="••••••••"
                 required
                 autoComplete="current-password"
                 className="form-input"
@@ -126,6 +126,7 @@ export default function LoginPage() {
                   position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)',
                   background: 'none', border: 'none', cursor: 'pointer',
                   color: 'var(--text-muted)', padding: '4px',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center'
                 }}
               >
                 {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
@@ -152,18 +153,15 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
+            className="btn-glow"
             style={{
               width: '100%', padding: '14px',
-              background: loading ? 'rgba(37,99,235,0.4)' : 'linear-gradient(135deg, var(--accent-blue), var(--accent-cyan))',
               border: 'none', borderRadius: '10px', cursor: loading ? 'not-allowed' : 'pointer',
-              color: '#050816', fontWeight: 700, fontSize: '14px', letterSpacing: '0.06em',
+              color: '#050816', fontWeight: 700, fontSize: '13px', letterSpacing: '0.1em',
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-              transition: 'all 0.2s ease',
-              boxShadow: loading ? 'none' : '0 4px 20px rgba(37,99,235,0.4)',
-              marginTop: '8px',
+              marginTop: '12px',
+              opacity: loading ? 0.7 : 1
             }}
-            onMouseEnter={e => { if (!loading) e.currentTarget.style.filter = 'brightness(1.1)'; }}
-            onMouseLeave={e => { e.currentTarget.style.filter = 'brightness(1)'; }}
           >
             {loading ? (
               <div className="loading-spinner" style={{ width: '18px', height: '18px', borderColor: 'rgba(5,8,22,0.3)', borderTopColor: '#050816' }} />

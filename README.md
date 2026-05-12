@@ -50,8 +50,8 @@ No cloud API dependencies. No training. No configuration. Paste a URL and the ch
                       │
            ┌──────────▼──────────┐
            │  Semantic Chunking   │
-           │  (512 tokens + 64   │
-           │   token overlap)    │
+           │ (400-700 tokens, sec-│
+           │  tion-aware split)  │
            └──────────┬──────────┘
                       │
            ┌──────────▼──────────┐
@@ -66,6 +66,12 @@ No cloud API dependencies. No training. No configuration. Paste a URL and the ch
            │  (domain-detected)  │
            └──────────┬──────────┘
                       │
+           ┌──────────▼──────────┐
+           │  Intent Routing     │
+           │  (keyword + semantic│
+           │   skill selection)  │
+           └──────────┬──────────┘
+           │
            ┌──────────▼──────────┐
            │  Prompt Assembly    │
            │  profile + history  │
@@ -94,13 +100,19 @@ No cloud API dependencies. No training. No configuration. Paste a URL and the ch
 - **Secure ingestion pipeline** — MIME validation, 25MB file cap, isolated temp storage, automatic cleanup
 
 ### Retrieval
-- **Hybrid RAG** — combines ChromaDB dense vector search with BM25 sparse retrieval, fused via Reciprocal Rank Fusion (RRF) for best-of-both accuracy
-- **RAPTOR summarization** — hierarchical chunk summarization for large document sets
-- **Iterative query refinement** — ambiguous queries are rewritten before retrieval
+- **Hybrid RAG** — combines ChromaDB dense vector search with BM25 sparse retrieval, fused via Reciprocal Rank Fusion (RRF) for high precision across both semantic and exact matches.
+- **Lightweight Intent Routing** — detects user intent (planner, finder, summarizer) to activate domain-specific skills and behavior rules.
+- **Section-Aware Chunking** — splits text at natural paragraph and heading boundaries with a target of 400–700 tokens for optimal contextual retrieval.
+
+### Experience
+- **5 Primary Domains** — specialized behavior for Education, Medical, Tourism, Developer, and Ecommerce sites.
+- **Proactive Behavior** — system makes reasonable assumptions and provides recommendations rather than asking for clarification.
+- **Embeddable Widget** — floating, mobile-responsive chat widget with token streaming and isolated sessions for external site integration.
+- **Live Monitoring** — admin dashboard with query analytics, latency tracking, and unanswered query logs.
 
 ### Domain Intelligence
-- **Auto domain detection** — classifies websites into 8 domains: `tourism`, `education`, `medical`, `developer`, `ecommerce`, `realestate`, `legal`, `general`
-- **Behavior profiles** — each domain has a distinct persona, tone, and instruction set loaded into the system prompt
+- **Auto domain detection** — classifies websites into 5 domains: `tourism`, `education`, `medical`, `developer`, `ecommerce` (with `general` fallback).
+- **Behavior Profiles** — unique system prompts, proactive recommendation styles, and domain-specific quick actions for each category.aded into the system prompt
 - **Domain-adaptive UI** — quick action chips in the chat interface change based on the chatbot's detected domain
 
 ### Skills System
