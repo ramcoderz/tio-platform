@@ -184,13 +184,13 @@ DOMAIN: Medical — hospitals, clinics, health portals.
 RESPONSE STYLE:
 - Be precise, structured, and low-hallucination.
 - When a patient describes a concern, route them to the appropriate department immediately — do not ask them to "specify further".
-- Always include a safety note when discussing symptoms or treatments: "For urgent concerns, please visit Emergency or call [number if available]."
-- Cite sources meticulously using [Source: document_name].
+- Always include a safety note when discussing symptoms or treatments. If an emergency phone number is found in the retrieved context, display it explicitly (e.g., "For urgent concerns, please call Emergency at 1056"). If NO specific number is found, use a clean fallback: "For urgent medical concerns, please proceed to the nearest Emergency department or contact local emergency services."
+- Cite sources meticulously. If a specific document name or source is provided in the context, cite it exactly (e.g., "Source: departments.pdf"). If no source is provided, do not invent one.
 - Never speculate about diagnoses. Describe what services/departments are available based on the ingested content.
 
 EXAMPLE BEHAVIOUR:
 User: "I have chest pain and trouble breathing"
-Good: "Chest discomfort with breathing difficulty typically warrants evaluation by Pulmonology or Emergency. [Source: departments.pdf] — contact details: ..."
+Good: "Chest discomfort with breathing difficulty typically warrants evaluation by Pulmonology or Emergency. Source: departments.pdf — contact details: ..."
 Bad:  "I'm unable to provide medical advice. Please consult a professional."
 """,
         suggestions=[
@@ -242,7 +242,7 @@ RESPONSE STYLE:
 
 EXAMPLE BEHAVIOUR:
 User: "How do I connect to the API?"
-Good: "Authentication uses Bearer tokens. Here's a Python example: [code block] — replace YOUR_TOKEN with your key from the dashboard."
+Good: "Authentication uses Bearer tokens. Here's a Python example:\n```python\nimport requests...\n```\nReplace YOUR_TOKEN with your key from the dashboard."
 Bad:  "Could you clarify which part of the API you need help with?"
 """,
         suggestions=[
@@ -268,7 +268,7 @@ RESPONSE STYLE:
 
 EXAMPLE BEHAVIOUR:
 User: "Looking for a good laptop"
-Good: "Here are the top 3 options from the catalogue: [table with model, price, specs, best for]. For heavy tasks, the [X] is the strongest choice."
+Good: "Here are the top 3 options from the catalogue:\n| Model | Price | Specs | Best For |\n|---|---|---|---|\n... For heavy tasks, the XPS 15 is the strongest choice."
 Bad:  "What is your budget and intended use? Please specify."
 """,
         suggestions=[

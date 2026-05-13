@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAppCtx } from '../context/AppContext';
-import { LogIn, Eye, EyeOff, Zap } from 'lucide-react';
+import { LogIn, Eye, EyeOff, Zap, Shield } from 'lucide-react';
 import { api } from '../api';
 import { useChatStore } from '../store';
 
@@ -29,7 +29,6 @@ export default function LoginPage() {
       localStorage.setItem('token', access_token);
       localStorage.setItem('tio_user_id', loggedUser.id);
       setUser(loggedUser);
-      // Anchor chat session to this specific user account
       setSessionFromUser(loggedUser.id);
       navigate('/');
     } catch (err) {
@@ -38,7 +37,6 @@ export default function LoginPage() {
       setLoading(false);
     }
   };
-
 
   return (
     <div style={{
@@ -51,63 +49,53 @@ export default function LoginPage() {
       position: 'relative',
       overflow: 'hidden',
     }}>
-      {/* Background glow */}
-      <div style={{
-        position: 'absolute', top: '30%', left: '50%', transform: 'translate(-50%,-50%)',
-        width: '600px', height: '600px',
-        background: 'radial-gradient(circle, rgba(37,99,235,0.08) 0%, transparent 70%)',
-        pointerEvents: 'none',
-      }} />
+      {/* Decorative blurred backgrounds */}
+      <div style={{ position: 'absolute', top: '10%', left: '10%', width: '400px', height: '400px', background: 'radial-gradient(circle, rgba(0, 198, 255, 0.1) 0%, transparent 70%)', filter: 'blur(60px)', zIndex: 1 }} />
+      <div style={{ position: 'absolute', bottom: '10%', right: '10%', width: '500px', height: '500px', background: 'radial-gradient(circle, rgba(124, 58, 237, 0.08) 0%, transparent 70%)', filter: 'blur(60px)', zIndex: 1 }} />
 
       <motion.div
-        initial={{ opacity: 0, y: 32 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-        className="glass-panel-glow"
-        style={{ width: '100%', maxWidth: '420px', padding: '40px', position: 'relative', zIndex: 10 }}
+        initial={{ opacity: 0, scale: 0.95, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        transition={{ duration: 0.5, ease: 'easeOut' }}
+        className="glass-panel"
+        style={{ 
+          width: '100%', 
+          maxWidth: '440px', 
+          padding: '48px', 
+          position: 'relative', 
+          zIndex: 10,
+          borderRadius: '28px',
+          border: '1px solid rgba(255,255,255,0.1)',
+          boxShadow: '0 30px 100px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05)'
+        }}
       >
-        {/* Header */}
-        <div style={{ marginBottom: '32px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
-            <div style={{
-              width: '36px', height: '36px', borderRadius: '10px',
-              background: 'linear-gradient(135deg, var(--accent), var(--accent-blue))',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: '0 0 20px rgba(0,198,255,0.3)',
-            }}>
-              <Zap size={18} color="#050816" />
+        {/* Branding */}
+        <div style={{ textAlign: 'center', marginBottom: '40px' }}>
+          <div className="flex-center" style={{ marginBottom: '20px' }}>
+            <div className="glass-panel" style={{ width: '56px', height: '56px', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '16px', boxShadow: '0 10px 30px rgba(0,198,255,0.2)' }}>
+              <Zap size={28} color="var(--accent)" />
             </div>
-            <span style={{ fontSize: '11px', color: 'var(--accent)', fontFamily: 'var(--font-mono)', letterSpacing: '0.2em', fontWeight: 600 }}>
-              TIO INTELLIGENCE CORE
-            </span>
           </div>
-          <h1 style={{ fontSize: '28px', fontWeight: 800, letterSpacing: '-0.03em', marginBottom: '8px' }} className="text-gradient">
-            Welcome Back
-          </h1>
-          <p style={{ fontSize: '13px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            Sign in to access your autonomous workspace.
-          </p>
+          <h1 className="text-premium" style={{ fontSize: '32px', fontWeight: 800, marginBottom: '8px' }}>Access Core</h1>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '15px' }}>Enter your credentials to synchronize.</p>
         </div>
 
-        {/* Form */}
-        <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {/* Username */}
+        <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           <div className="form-group">
-            <label className="form-label">Username</label>
+            <label className="form-label" style={{ marginBottom: '8px' }}>Identity</label>
             <input
               type="text"
               value={username}
               onChange={e => setUsername(e.target.value)}
-              placeholder="Enter your username"
+              placeholder="Username"
               required
-              autoComplete="username"
-              className="form-input"
+              className="input"
+              style={{ background: 'rgba(255,255,255,0.03)' }}
             />
           </div>
 
-          {/* Password */}
           <div className="form-group">
-            <label className="form-label">Security Key</label>
+            <label className="form-label" style={{ marginBottom: '8px' }}>Security Key</label>
             <div style={{ position: 'relative' }}>
               <input
                 type={showPass ? 'text' : 'password'}
@@ -115,70 +103,71 @@ export default function LoginPage() {
                 onChange={e => setPassword(e.target.value)}
                 placeholder="••••••••"
                 required
-                autoComplete="current-password"
-                className="form-input"
-                style={{ paddingRight: '44px' }}
+                className="input"
+                style={{ paddingRight: '48px', background: 'rgba(255,255,255,0.03)' }}
               />
               <button
                 type="button"
                 onClick={() => setShowPass(p => !p)}
                 style={{
-                  position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)',
-                  background: 'none', border: 'none', cursor: 'pointer',
-                  color: 'var(--text-muted)', padding: '4px',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center'
+                  position: 'absolute', right: '14px', top: '50%', transform: 'translateY(-50%)',
+                  color: 'var(--text-muted)', padding: '4px'
                 }}
               >
-                {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
+                {showPass ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             </div>
           </div>
 
-          {/* Error */}
           {error && (
             <motion.div
-              initial={{ opacity: 0, y: -6 }}
+              initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
               style={{
-                padding: '10px 14px', borderRadius: '8px',
-                background: 'var(--accent-red-dim)', border: '1px solid rgba(239,68,68,0.3)',
-                color: 'var(--accent-red)', fontSize: '13px',
+                padding: '12px 16px', borderRadius: '12px',
+                background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)',
+                color: '#F87171', fontSize: '13px',
               }}
             >
               {error}
             </motion.div>
           )}
 
-          {/* Submit */}
           <button
             type="submit"
             disabled={loading}
-            className="btn-glow"
-            style={{
-              width: '100%', padding: '14px',
-              border: 'none', borderRadius: '10px', cursor: loading ? 'not-allowed' : 'pointer',
-              color: '#050816', fontWeight: 700, fontSize: '13px', letterSpacing: '0.1em',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
-              marginTop: '12px',
+            className="btn btn-primary"
+            style={{ 
+              marginTop: '12px', 
+              height: '52px', 
+              fontSize: '15px',
+              borderRadius: '14px',
               opacity: loading ? 0.7 : 1
             }}
           >
-            {loading ? (
-              <div className="loading-spinner" style={{ width: '18px', height: '18px', borderColor: 'rgba(5,8,22,0.3)', borderTopColor: '#050816' }} />
-            ) : (
-              <><LogIn size={16} /> SIGN IN</>
+            {loading ? 'Synchronizing...' : (
+              <>
+                <Shield size={18} />
+                <span>Initialize Session</span>
+              </>
             )}
           </button>
         </form>
 
-        {/* Footer */}
-        <p style={{ textAlign: 'center', marginTop: '28px', fontSize: '13px', color: 'var(--text-secondary)' }}>
-          No account?{' '}
-          <Link to="/register" style={{ color: 'var(--accent-cyan)', fontWeight: 600 }}>
-            Create one
-          </Link>
-        </p>
+        <div style={{ marginTop: '32px', textAlign: 'center' }}>
+          <p style={{ fontSize: '14px', color: 'var(--text-muted)' }}>
+            New to the ecosystem?{' '}
+            <Link to="/register" style={{ color: 'var(--accent)', fontWeight: 600, marginLeft: '4px' }}>
+              Create Account
+            </Link>
+          </p>
+        </div>
       </motion.div>
+
+      {/* Footer Branding */}
+      <div style={{ position: 'absolute', bottom: '32px', opacity: 0.3, letterSpacing: '0.2em', fontSize: '10px', fontWeight: 600 }}>
+        TIO INTELLIGENCE PLATFORM v2.0
+      </div>
     </div>
   );
 }

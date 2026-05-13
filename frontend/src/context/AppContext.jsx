@@ -24,9 +24,9 @@ export function AppProvider({ children }) {
       });
     }
 
-    // --- Inactivity Timeout (30 Minutes) ---
+    // --- Inactivity Timeout (4 Hours) ---
     let timeoutId;
-    const INACTIVITY_TIME = 30 * 60 * 1000; // 30 minutes
+    const INACTIVITY_TIME = 4 * 60 * 60 * 1000; // 4 hours
 
     const resetTimer = () => {
       if (timeoutId) clearTimeout(timeoutId);
@@ -48,8 +48,12 @@ export function AppProvider({ children }) {
     };
   }, []);
 
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
   const toggleTheme = () => {
-    const next = theme === "dark" ? "light-neutral" : "dark";
+    const next = theme === "dark" ? "light" : "dark";
     localStorage.setItem("tio_theme", next);
     setTheme(next);
     // Sync to backend

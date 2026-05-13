@@ -60,6 +60,7 @@ export default function SkillsMenu({ domain = 'general', onSelect, onClose }) {
               display: 'flex', alignItems: 'center', gap: '10px',
               padding: '10px', borderRadius: 'var(--radius-sm)',
               textAlign: 'left', width: '100%',
+              background: 'transparent', border: 'none', cursor: 'pointer',
               transition: 'background 0.15s'
             }}
             onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}

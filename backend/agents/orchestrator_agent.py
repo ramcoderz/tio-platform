@@ -81,8 +81,11 @@ def detect_intent(query: str, domain: str | None) -> str:
     Returns the most likely skill name, or 'general_chat' if no pattern matches.
     """
     q = query.lower()
-    # If domain is unknown, consider all skills
-    eligible = DOMAIN_SKILL_MAP.get(domain, list(INTENT_PATTERNS.keys())) if domain != "general" else list(INTENT_PATTERNS.keys())
+    # Domain Locking: Strictly restrict skills to the domain
+    if domain and domain != "general":
+        eligible = DOMAIN_SKILL_MAP.get(domain, ["doc_summarizer"])
+    else:
+        eligible = list(INTENT_PATTERNS.keys())
 
     # 1. Keyword check
     scores: dict[str, int] = {skill: 0 for skill in eligible}
@@ -104,15 +107,22 @@ def detect_intent(query: str, domain: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 async def _get_context(
-    query: str, chatbot_id: int | None
+    query: str, chatbot_id: int | None, domain: str | None = None
 ) -> tuple[list, str, float]:
     """Run hybrid retrieval, return (chunks, context_str, retrieval_ms)."""
     t0 = time.monotonic()
-    chunks = await async_retrieve(query, top_k=settings.top_k, chatbot_id=chatbot_id)
+    chunks = await async_retrieve(query, top_k=settings.top_k, chatbot_id=chatbot_id, domain=domain)
     elapsed = (time.monotonic() - t0) * 1000
 
+    # Strict Validation: Ensure every chunk belongs to the chatbot
+    if chatbot_id:
+        valid_chunks = [c for c in chunks if c.metadata.get("chatbot_id") == chatbot_id]
+        if len(valid_chunks) < len(chunks):
+            logger.warning(f"[SECURITY] Filtered out {len(chunks) - len(valid_chunks)} mismatched chunks for chatbot_id={chatbot_id}")
+            chunks = valid_chunks
+
     if not chunks:
-        logger.warning(f"[RETRIEVAL] No chunks found for query: {query!r} (chatbot={chatbot_id})")
+        logger.warning(f"[RETRIEVAL] No valid chunks found for query: {query!r} (chatbot={chatbot_id})")
         return [], "", elapsed
 
     context_str = "\n\n".join(
@@ -131,16 +141,21 @@ async def _get_chatbot(
     chatbot_id: int | None = None,
     session_id: str | None = None,
 ) -> "Chatbot | None":
+    chatbot = None
     if chatbot_id:
-        return await db.get(Chatbot, chatbot_id)
-
+        chatbot = await db.get(Chatbot, chatbot_id)
+    
     if session_id:
         stmt = select(Conversation).where(Conversation.session_id == session_id)
         conv = (await db.execute(stmt)).scalar_one_or_none()
-        if conv and conv.chatbot_id:
-            return await db.get(Chatbot, conv.chatbot_id)
+        if conv:
+            if chatbot_id and conv.chatbot_id != chatbot_id:
+                logger.error(f"[SECURITY] Session/Chatbot mismatch! session={session_id} belongs to bot {conv.chatbot_id}, but bot {chatbot_id} requested.")
+                return None
+            if not chatbot:
+                chatbot = await db.get(Chatbot, conv.chatbot_id)
 
-    return None
+    return chatbot
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +242,7 @@ async def run_orchestration(
     intent = detect_intent(query, effective_domain)
 
     # Retrieval (use normalized query for better grounding)
-    chunks, context_str, retrieval_ms = await _get_context(normalized_query, effective_id)
+    chunks, context_str, retrieval_ms = await _get_context(normalized_query, effective_id, domain=effective_domain)
 
     # Profile
     bp = get_profile(profile or effective_domain)

@@ -4,20 +4,20 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Home, Plus, MessageSquare, FileText,
   Shield, Settings, Zap, LogOut, Bot,
-  Sun, Moon, Menu, X, ChevronRight
+  Sun, Moon, Menu, X, ChevronRight, Layers, Activity
 } from 'lucide-react';
 import { useAppCtx } from '../context/AppContext';
 
 const NAV_ITEMS = [
-  { icon: Home, label: 'Home', path: '/' },
-  { icon: Plus, label: 'Create Chatbot', path: '/create' },
-  { icon: MessageSquare, label: 'Chats', path: '/chat' },
-  { icon: FileText, label: 'Files', path: '/files' },
+  { icon: Home, label: 'Dashboard', path: '/' },
+  { icon: MessageSquare, label: 'Neural Chat', path: '/chat' },
+  { icon: Layers, label: 'Knowledge Base', path: '/files' },
+  { icon: Plus, label: 'Deploy Core', path: '/create' },
 ];
 
 const BOTTOM_ITEMS = [
-  { icon: Shield, label: 'Admin', path: '/admin' },
-  { icon: Settings, label: 'Settings', path: '/settings' },
+  { icon: Shield, label: 'Command Center', path: '/admin' },
+  { icon: Settings, label: 'Configuration', path: '/settings' },
 ];
 
 export default function AppShell({ children }) {
@@ -39,212 +39,188 @@ export default function AppShell({ children }) {
     fetchChatbots();
   }, [location.pathname]);
 
-  // Auto-collapse on medium screens
-  useEffect(() => {
-    const mq = window.matchMedia('(max-width: 1024px)');
-    const handler = (e) => setCollapsed(e.matches);
-    handler(mq);
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  }, []);
-
   const isAuth = location.pathname === '/login' || location.pathname === '/register';
-  if (isAuth) return <>{children}</>;
+  const isChat = location.pathname === '/chat';
 
-  const sidebarWidth = collapsed ? 72 : 260;
+  // For /chat, we use a more integrated layout, so we might want a thinner sidebar or hide it
+  const sidebarWidth = collapsed ? 80 : 280;
+
+  if (isAuth) return <>{children}</>;
 
   const renderNavItem = (item, isActive) => {
     const Icon = item.icon;
     return (
-      <Link key={item.path} to={item.path} style={{ textDecoration: 'none', display: 'block', marginBottom: '2px' }} onClick={() => setMobileOpen(false)}>
+      <Link key={item.path} to={item.path} style={{ textDecoration: 'none', display: 'block', marginBottom: '4px' }} onClick={() => setMobileOpen(false)}>
         <motion.div
-          whileHover={{ x: collapsed ? 0 : 3 }}
+          whileHover={{ x: collapsed ? 0 : 4, background: 'rgba(255,255,255,0.03)' }}
           transition={{ type: 'spring', stiffness: 400, damping: 30 }}
-          title={collapsed ? item.label : undefined}
           style={{
-            display: 'flex', alignItems: 'center', gap: '12px',
-            padding: collapsed ? '10px' : '10px 14px',
+            display: 'flex', alignItems: 'center', gap: '14px',
+            padding: collapsed ? '12px' : '12px 16px',
             justifyContent: collapsed ? 'center' : 'flex-start',
-            borderRadius: 'var(--radius-sm)',
-            background: isActive ? 'rgba(0,198,255,0.08)' : 'transparent',
-            color: isActive ? 'var(--accent)' : 'var(--text-muted)',
-            fontWeight: isActive ? 600 : 500, fontSize: '14px',
-            transition: 'all 0.15s ease',
-            borderLeft: isActive ? '2px solid var(--accent)' : '2px solid transparent',
+            borderRadius: '16px',
+            background: isActive ? 'var(--accent-gradient)' : 'transparent',
+            color: isActive ? '#03050c' : 'var(--text-secondary)',
+            fontWeight: isActive ? 700 : 500, fontSize: '14px',
+            transition: 'all 0.2s ease',
+            boxShadow: isActive ? '0 8px 20px rgba(0,198,255,0.2)' : 'none'
           }}
         >
-          <Icon size={18} style={{ opacity: isActive ? 1 : 0.65, flexShrink: 0 }} />
-          {!collapsed && item.label}
+          <Icon size={20} style={{ flexShrink: 0 }} />
+          {!collapsed && <span>{item.label}</span>}
         </motion.div>
       </Link>
     );
   };
 
   const sidebarContent = (
-    <>
-      {/* Logo */}
-      <div style={{ padding: collapsed ? '20px 12px' : '20px', display: 'flex', alignItems: 'center', gap: '10px', justifyContent: collapsed ? 'center' : 'flex-start' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', padding: '24px 16px' }}>
+      {/* Brand */}
+      <div style={{ padding: '0 8px', marginBottom: '40px', display: 'flex', alignItems: 'center', gap: '14px', justifyContent: collapsed ? 'center' : 'flex-start' }}>
         <div style={{
-          width: '32px', height: '32px', borderRadius: '8px', flexShrink: 0,
-          background: 'linear-gradient(135deg, #00C6FF, #0072FF)',
+          width: '40px', height: '40px', borderRadius: '12px', flexShrink: 0,
+          background: 'var(--premium-gradient)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: '0 0 12px rgba(0,198,255,0.3)'
+          boxShadow: '0 10px 25px rgba(0,198,255,0.3)'
         }}>
-          <Zap size={16} color="#050816" />
+          <Zap size={20} color="#03050c" />
         </div>
         {!collapsed && (
-          <span style={{ fontSize: '17px', fontWeight: 800, letterSpacing: '-0.02em', color: '#fff' }}>TiO</span>
+          <span className="text-premium" style={{ fontSize: '24px', fontWeight: 900, letterSpacing: '-0.03em' }}>TiO</span>
         )}
       </div>
 
-      {/* New Chatbot Button */}
-      <div style={{ padding: collapsed ? '0 8px 16px' : '0 16px 16px' }}>
-        <button
-          onClick={() => { navigate('/create'); setMobileOpen(false); }}
-          className="btn btn-primary btn-sm"
-          style={{ width: '100%', justifyContent: 'center', fontSize: collapsed ? '0' : '13px', padding: collapsed ? '10px' : undefined }}
-        >
-          <Plus size={16} />
-          {!collapsed && 'New Chatbot'}
-        </button>
-      </div>
-
-      {/* Navigation */}
-      <nav style={{ flex: 1, padding: collapsed ? '0 8px' : '0 12px', overflowY: 'auto' }} className="custom-scrollbar">
+      {/* Navigation Groups */}
+      <nav style={{ flex: 1, overflowY: 'auto' }} className="custom-scrollbar">
         {!collapsed && (
-          <p style={{ padding: '0 6px', fontSize: '10px', fontWeight: 700, color: 'var(--text-dim)', letterSpacing: '0.12em', marginBottom: '8px', textTransform: 'uppercase' }}>
-            Platform
+          <p style={{ padding: '0 16px', fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', letterSpacing: '0.15em', marginBottom: '16px', textTransform: 'uppercase' }}>
+            System Core
           </p>
         )}
         {NAV_ITEMS.map(item => renderNavItem(item, location.pathname === item.path))}
 
-        {/* Chatbot List */}
-        <div style={{ marginTop: '20px' }}>
+        <div style={{ marginTop: '40px' }}>
           {!collapsed && (
-            <p style={{ padding: '0 6px', fontSize: '10px', fontWeight: 700, color: 'var(--text-dim)', letterSpacing: '0.12em', marginBottom: '8px', textTransform: 'uppercase' }}>
-              My Chatbots
-            </p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 16px', marginBottom: '16px' }}>
+               <p style={{ fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', letterSpacing: '0.15em', textTransform: 'uppercase' }}>Intelligence</p>
+               <Activity size={12} color="var(--text-dim)" />
+            </div>
           )}
-          {chatbots.length === 0 ? (
-            !collapsed && <p style={{ padding: '0 6px', fontSize: '12px', color: 'var(--text-dim)' }}>No chatbots yet</p>
-          ) : (
-            chatbots.map(cb => (
-              <div
-                key={cb.id}
-                onClick={() => { navigate(`/chat?chatbot_id=${cb.id}`); setMobileOpen(false); }}
-                title={collapsed ? cb.name : undefined}
-                style={{
-                  padding: collapsed ? '8px' : '7px 10px',
-                  borderRadius: '6px', cursor: 'pointer',
-                  fontSize: '13px', color: 'var(--text-secondary)',
-                  display: 'flex', alignItems: 'center', gap: '8px',
-                  justifyContent: collapsed ? 'center' : 'flex-start',
-                  marginBottom: '1px', transition: 'background 0.15s'
-                }}
-                onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-              >
-                <Bot size={14} style={{ opacity: 0.5, flexShrink: 0 }} />
-                {!collapsed && (
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cb.name}</span>
-                )}
-              </div>
-            ))
-          )}
+          {chatbots.slice(0, 5).map(cb => (
+            <div
+              key={cb.id}
+              onClick={() => { navigate(`/chat?chatbot_id=${cb.id}`); setMobileOpen(false); }}
+              className="nav-link"
+              style={{
+                padding: collapsed ? '12px' : '10px 16px',
+                borderRadius: '12px', cursor: 'pointer',
+                fontSize: '13px', color: 'var(--text-muted)',
+                display: 'flex', alignItems: 'center', gap: '12px',
+                justifyContent: collapsed ? 'center' : 'flex-start',
+                marginBottom: '2px', transition: 'all 0.2s'
+              }}
+              onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; e.currentTarget.style.color = '#fff'; }}
+              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+            >
+              <Bot size={16} style={{ opacity: 0.5, flexShrink: 0 }} />
+              {!collapsed && (
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 500 }}>{cb.name}</span>
+              )}
+            </div>
+          ))}
         </div>
       </nav>
 
-      {/* Bottom Section */}
-      <div style={{ borderTop: '1px solid var(--border-light)', padding: collapsed ? '12px 8px' : '12px 12px' }}>
-        {BOTTOM_ITEMS.filter(item => item.label !== 'Admin' || user?.role === 'admin').map(item => renderNavItem(item, location.pathname === item.path))}
-
+      {/* Footer Tools */}
+      <div style={{ marginTop: 'auto', paddingTop: '24px', borderTop: '1px solid var(--border)' }}>
         {/* Theme Toggle */}
         <button
           onClick={toggleTheme}
-          title={collapsed ? 'Toggle Theme' : undefined}
+          className="nav-link"
           style={{
-            width: '100%', padding: collapsed ? '10px' : '8px 14px', marginTop: '4px',
-            borderRadius: 'var(--radius-sm)',
-            background: 'var(--bg-hover)', border: '1px solid var(--border-light)',
-            color: 'var(--text-secondary)', display: 'flex', alignItems: 'center',
+            width: '100%', padding: collapsed ? '12px' : '12px 16px',
+            borderRadius: '16px', display: 'flex', alignItems: 'center', gap: '14px',
             justifyContent: collapsed ? 'center' : 'flex-start',
-            gap: '10px', fontSize: '12px', fontWeight: 500
+            color: 'var(--text-secondary)', background: 'transparent', border: 'none',
+            cursor: 'pointer', marginBottom: '8px'
           }}
         >
-          {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
-          {!collapsed && (theme === 'dark' ? 'Light Mode' : 'Dark Mode')}
+          {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
+          {!collapsed && <span>{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>}
         </button>
 
-        {/* User Card */}
-        {user && (
+        {BOTTOM_ITEMS.filter(item => item.label !== 'Command Center' || user?.role === 'admin').map(item => renderNavItem(item, location.pathname === item.path))}
+
+        <div style={{
+          marginTop: '20px', padding: collapsed ? '12px' : '16px',
+          borderRadius: '20px', background: 'var(--bg-accent)',
+          border: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', gap: '12px',
+          justifyContent: collapsed ? 'center' : 'flex-start'
+        }}>
           <div style={{
-            marginTop: '10px', padding: collapsed ? '8px' : '10px',
-            borderRadius: 'var(--radius-sm)', background: 'var(--bg-hover)',
-            display: 'flex', alignItems: 'center', gap: '10px',
-            justifyContent: collapsed ? 'center' : 'flex-start'
+            width: '36px', height: '36px', borderRadius: '12px', flexShrink: 0,
+            background: 'var(--accent-gradient)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: '#03050c', fontWeight: 800, fontSize: '13px'
           }}>
-            <div style={{
-              width: '30px', height: '30px', borderRadius: '50%', flexShrink: 0,
-              background: 'linear-gradient(135deg, #00C6FF, #0072FF)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: '#050816', fontWeight: 700, fontSize: '11px'
-            }}>
-              {user.username?.slice(0, 2).toUpperCase()}
-            </div>
-            {!collapsed && (
-              <>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p style={{ fontWeight: 600, fontSize: '12px', color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.username}</p>
-                  <p style={{ fontSize: '10px', color: 'var(--text-muted)' }}>{user.role || 'Builder'}</p>
-                </div>
-                <button onClick={logout} style={{ padding: '4px', color: 'var(--text-muted)' }}><LogOut size={14} /></button>
-              </>
-            )}
+            {user?.username?.slice(0, 1).toUpperCase()}
           </div>
-        )}
+          {!collapsed && (
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ fontWeight: 700, fontSize: '13px', color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.username}</p>
+              <button onClick={logout} style={{ fontSize: '11px', color: 'var(--accent)', fontWeight: 600, background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>Disconnect</button>
+            </div>
+          )}
+        </div>
       </div>
-    </>
+    </div>
   );
 
   return (
     <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
-      {/* Mobile hamburger */}
+      {/* Mobile Trigger */}
       <button
         className="hide-desktop"
         onClick={() => setMobileOpen(true)}
         style={{
-          position: 'fixed', top: '16px', left: '16px', zIndex: 60,
-          width: '40px', height: '40px', borderRadius: 'var(--radius-sm)',
-          background: 'var(--bg-card)', border: '1px solid var(--border)',
+          position: 'fixed', top: '24px', left: '24px', zIndex: 60,
+          width: '44px', height: '44px', borderRadius: '14px',
+          background: 'rgba(255,255,255,0.05)', backdropFilter: 'blur(10px)',
+          border: '1px solid rgba(255,255,255,0.1)',
           display: 'none', alignItems: 'center', justifyContent: 'center', color: '#fff'
         }}
       >
         <Menu size={20} />
       </button>
 
-      {/* Desktop Sidebar */}
-      <div className="hide-mobile" style={{
-        width: `${sidebarWidth}px`, display: 'flex', flexDirection: 'column',
-        borderRight: '1px solid var(--border-light)', background: 'var(--bg-secondary)',
-        flexShrink: 0, transition: 'width 0.2s ease', overflow: 'hidden'
-      }}>
+      {/* Desktop Navigation */}
+      <motion.div 
+        className="hide-mobile" 
+        animate={{ width: sidebarWidth }}
+        style={{
+          display: 'flex', flexDirection: 'column',
+          borderRight: '1px solid var(--border)', background: 'var(--bg-secondary)',
+          flexShrink: 0, overflow: 'hidden', zIndex: 50
+        }}
+      >
         {sidebarContent}
-      </div>
+      </motion.div>
 
-      {/* Mobile Drawer */}
+      {/* Mobile Overlay */}
       <AnimatePresence>
         {mobileOpen && (
           <>
             <motion.div
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               onClick={() => setMobileOpen(false)}
-              style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 70 }}
+              style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(8px)', zIndex: 70 }}
             />
             <motion.div
-              initial={{ x: -280 }} animate={{ x: 0 }} exit={{ x: -280 }}
-              transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+              initial={{ x: -300 }} animate={{ x: 0 }} exit={{ x: -300 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
               style={{
-                position: 'fixed', top: 0, left: 0, bottom: 0, width: '280px',
+                position: 'fixed', top: 0, left: 0, bottom: 0, width: '300px',
                 background: 'var(--bg-secondary)', zIndex: 80,
                 display: 'flex', flexDirection: 'column',
                 borderRight: '1px solid var(--border)'
@@ -252,9 +228,9 @@ export default function AppShell({ children }) {
             >
               <button
                 onClick={() => setMobileOpen(false)}
-                style={{ position: 'absolute', top: '16px', right: '16px', color: 'var(--text-muted)', padding: '4px' }}
+                style={{ position: 'absolute', top: '24px', right: '24px', color: 'var(--text-muted)', padding: '8px' }}
               >
-                <X size={20} />
+                <X size={24} />
               </button>
               {sidebarContent}
             </motion.div>
@@ -262,7 +238,7 @@ export default function AppShell({ children }) {
         )}
       </AnimatePresence>
 
-      {/* Main Content */}
+      {/* Primary Content Plane */}
       <main style={{ flex: 1, overflowY: 'auto', position: 'relative' }} className="custom-scrollbar">
         {children}
       </main>

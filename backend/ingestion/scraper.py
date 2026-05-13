@@ -103,7 +103,7 @@ class Scraper:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
                 page = await browser.new_page()
-                await page.goto(url, wait_until="networkidle", timeout=30_000)
+                await page.goto(url, wait_until="networkidle", timeout=60_000)
                 content = await page.content()
                 await browser.close()
                 return content
@@ -143,7 +143,7 @@ class Scraper:
 
                     visited.add(current_url)
                     try:
-                        await page.goto(current_url, wait_until="domcontentloaded", timeout=15_000)
+                        await page.goto(current_url, wait_until="networkidle", timeout=30_000)
                         links = await page.eval_on_selector_all(
                             "a[href]", "elements => elements.map(e => e.href)"
                         )

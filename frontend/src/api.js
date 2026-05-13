@@ -1,7 +1,7 @@
 export async function api(path, options = {}) {
   const token = localStorage.getItem("token");
   const headers = { 
-    "Content-Type": "application/json", 
+    ...(options.isFormData ? {} : { "Content-Type": "application/json" }),
     ...(token ? { "Authorization": `Bearer ${token}` } : {}),
     ...(options.headers || {}) 
   };

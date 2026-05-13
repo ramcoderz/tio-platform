@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
 import os
 import asyncio
+import httpx
 
 from backend.db.session import get_db
 from backend.models.entities import Chatbot, UploadedDocument, Conversation, Message, EmbeddingMetadata, SessionMemory
@@ -40,6 +41,21 @@ async def create_chatbot(payload: ChatbotCreate, db: AsyncSession = Depends(get_
             name = domain.replace("www.", "").split('.')[0].capitalize() + " Assistant"
         else:
             name = "New Chatbot"
+            
+    # Validate website URL if provided
+    if payload.website_url:
+        try:
+            async with httpx.AsyncClient(timeout=5.0, verify=False) as client:
+                # Add a realistic User-Agent to avoid immediate blocking from some hosts
+                headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                resp = await client.head(payload.website_url, headers=headers, follow_redirects=True)
+                if resp.status_code >= 400 and resp.status_code != 403 and resp.status_code != 405:
+                    # Fallback to GET if HEAD fails with some specific errors (some servers reject HEAD)
+                    resp_get = await client.get(payload.website_url, headers=headers, follow_redirects=True)
+                    if resp_get.status_code >= 400:
+                        raise HTTPException(status_code=400, detail=f"Website returned error status: {resp_get.status_code}")
+        except httpx.RequestError as e:
+            raise HTTPException(status_code=400, detail=f"Could not reach website: {str(e)}")
     
     chatbot = Chatbot(
         name=name or "New Chatbot",
@@ -201,8 +217,11 @@ async def chat(payload: ChatReq, db: AsyncSession = Depends(get_db)):
     return result
 
 @api_router.get("/chat/history/{session_id}")
-async def chat_history(session_id: str, db: AsyncSession = Depends(get_db)):
-    conv = (await db.execute(select(Conversation).where(Conversation.session_id == session_id))).scalar_one_or_none()
+async def chat_history(session_id: str, chatbot_id: int | None = None, db: AsyncSession = Depends(get_db)):
+    stmt = select(Conversation).where(Conversation.session_id == session_id)
+    if chatbot_id:
+        stmt = stmt.where(Conversation.chatbot_id == chatbot_id)
+    conv = (await db.execute(stmt)).scalars().first()
     if not conv:
         return []
     return await get_all_history(db, conv.id)
@@ -254,6 +273,18 @@ async def execute_skill(payload: SkillReq, db: AsyncSession = Depends(get_db)):
         "doc_summarizer": ("backend.agents.specialized_agents", "doc_summarizer_skill", lambda: (context,)),
     }
     
+    from backend.agents.orchestrator_agent import DOMAIN_SKILL_MAP
+    
+    # Domain Locking for Skills
+    domain = chatbot.domain or "general"
+    allowed_skills = DOMAIN_SKILL_MAP.get(domain, ["doc_summarizer"])
+    
+    if payload.skill_id not in allowed_skills and domain != "general":
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Skill '{payload.skill_id}' is not permitted for domain '{domain}'"
+        )
+
     if payload.skill_id not in skill_map:
         raise HTTPException(status_code=400, detail=f"Unknown skill: {payload.skill_id}")
     

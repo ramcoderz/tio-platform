@@ -116,17 +116,21 @@ def _sparse_search(q_tokens: list, candidates: list) -> list:
     scores = local_bm25.get_scores(q_tokens)
     return [(scores[i], candidates[i]) for i in range(len(candidates))]
 
-def retrieve(query: str, top_k: int | None = None, chatbot_id: int | None = None) -> list[RetrievedChunk]:
+def retrieve(query: str, top_k: int | None = None, chatbot_id: int | None = None, domain: str | None = None) -> list[RetrievedChunk]:
     limit = top_k or settings.top_k
     q_vec = np.asarray(embed([query])[0], dtype="float32")
     q_tokens = _tokenize(query)
     
     with _lock:
         if not _rows: return []
-        candidates = _rows
-        if chatbot_id:
-            candidates = [r for r in candidates if r.get("metadata", {}).get("chatbot_id") == chatbot_id]
-        
+        if not chatbot_id:
+            logger.warning("[RETRIEVAL] Missing chatbot_id in retrieval request. Returning empty.")
+            return []
+            
+        candidates = [r for r in _rows if r.get("metadata", {}).get("chatbot_id") == chatbot_id]
+        if domain and domain != "general":
+            candidates = [r for r in candidates if r.get("metadata", {}).get("domain") == domain]
+            
         if not candidates: return []
         
         dense_res = _dense_search(q_vec, candidates)
@@ -145,7 +149,7 @@ def retrieve(query: str, top_k: int | None = None, chatbot_id: int | None = None
         fused = sorted(fused, key=lambda x: x[0], reverse=True)[:limit]
         return [RetrievedChunk(r["chunk_id"], r["text"], float(s), r["document"], r["metadata"]) for s, r in fused]
 
-async def async_retrieve(query: str, top_k: int | None = None, chatbot_id: int | None = None) -> list[RetrievedChunk]:
+async def async_retrieve(query: str, top_k: int | None = None, chatbot_id: int | None = None, domain: str | None = None) -> list[RetrievedChunk]:
     limit = top_k or settings.top_k
     q_vec = np.asarray(embed([query])[0], dtype="float32")
     q_tokens = _tokenize(query)
@@ -154,11 +158,22 @@ async def async_retrieve(query: str, top_k: int | None = None, chatbot_id: int |
         if not _rows:
             logger.warning("[RETRIEVAL] Vector store is empty — no chunks indexed yet.")
             return []
-        candidates = _rows
-        if chatbot_id:
-            candidates = [r for r in candidates if r.get("metadata", {}).get("chatbot_id") == chatbot_id]
+        
+        if not chatbot_id:
+            logger.error("[RETRIEVAL] CRITICAL: async_retrieve called WITHOUT chatbot_id. Denying global search for security.")
+            return []
+
+        candidates = [r for r in _rows if r.get("metadata", {}).get("chatbot_id") == chatbot_id]
+        
+        # Domain Locking: Secondary validation layer
+        if domain and domain != "general":
+            before_count = len(candidates)
+            candidates = [r for r in candidates if r.get("metadata", {}).get("domain") == domain]
+            if len(candidates) < before_count:
+                logger.info(f"[RETRIEVAL] Filtered out {before_count - len(candidates)} chunks due to domain mismatch (target: {domain})")
+
         if not candidates:
-            logger.warning(f"[RETRIEVAL] No chunks for chatbot_id={chatbot_id}. Has ingestion completed?")
+            logger.warning(f"[RETRIEVAL] No chunks for chatbot_id={chatbot_id} domain={domain}. Has ingestion completed?")
             return []
 
     dense_task = asyncio.to_thread(_dense_search, q_vec, candidates)

@@ -49,7 +49,7 @@ def _render_markdown(messages: list[dict], session_id: str) -> str:
 @export_router.get("/chat/export/{session_id}")
 async def export_chat(
     session_id: str,
-    format: str = Query("md", regex="^(pdf|md|docx)$"),
+    format: str = Query("md", pattern="^(pdf|md|docx)$"),
     db: AsyncSession = Depends(get_db)
 ):
     messages = await _get_messages(session_id, db)

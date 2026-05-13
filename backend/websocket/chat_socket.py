@@ -84,7 +84,7 @@ async def chat_socket(
                 citations = []
 
                 try:
-                    async for chunk_data in run_orchestration_stream(message, history, db, session_id=session_id):
+                    async for chunk_data in run_orchestration_stream(message, history, db, chatbot_id=chatbot_id, session_id=session_id):
                         if chunk_data["type"] == "metadata":
                             citations = chunk_data.get("citations", [])
                             await websocket.send_json(chunk_data)

@@ -91,9 +91,9 @@ def _extract_entities(text: str) -> list[str]:
     return list(set(found))
 
 
-def _chunk_text(text: str, source: str, chatbot_id: int) -> list[dict]:
+def _chunk_text(text: str, source: str, chatbot_id: int, domain: str = "general") -> list[dict]:
     """
-    Section-aware chunking with entity extraction.
+    Section-aware chunking with entity extraction and domain tagging.
     """
     sections = _split_into_sections(text)
     chunks: list[dict] = []
@@ -112,8 +112,9 @@ def _chunk_text(text: str, source: str, chatbot_id: int) -> list[dict]:
             "metadata": {
                 "char_start": text.find(buf[:40]) if buf[:40] in text else 0,
                 "chatbot_id": chatbot_id,
+                "domain": domain,
                 "source": source,
-                "entities": entities,  # Store extracted entities for boosting
+                "entities": entities,
             },
         })
 
@@ -166,7 +167,9 @@ async def ingest_file(chatbot_id: int, file: UploadFile, db: AsyncSession) -> di
 
     try:
         text = await asyncio.to_thread(_parse_file, path)
-        chunks = _chunk_text(text, file.filename, chatbot_id)
+        chatbot = await db.get(Chatbot, chatbot_id)
+        domain = chatbot.domain if chatbot else "general"
+        chunks = _chunk_text(text, file.filename, chatbot_id, domain=domain)
         if not chunks:
             raise ValueError("No readable text found in file.")
 
@@ -259,14 +262,21 @@ async def ingest_website(chatbot_id: int, url: str) -> None:
             await db.commit()
             logger.info(f"[INGESTION] Starting website ingestion for chatbot={chatbot_id}, url={url}")
 
+            # --- Early Domain Detection ---
+            from backend.utils.domain_intelligence import domain_detector
+            homepage_content = await scraper.extract_content(url)
+            detected_domain = domain_detector.detect(homepage_content, {"url": url})
+            chatbot.domain = detected_domain
+            chatbot.behavior_profile = detected_domain
+            await db.commit()
+            logger.info(f"[INGESTION] Detected domain: {detected_domain}")
+
             # Determine crawl depth based on site type
             is_deep = any(k in url.lower() for k in [
                 ".edu", "university", "college", "tourism", "hospital", "clinic"
             ])
             depth = 2 if is_deep else 1
-            pages, docs = await scraper.discover_assets(
-                url, limit=settings.top_k * 4, depth=depth
-            )
+            pages, docs = await scraper.discover_assets(url, limit=settings.top_k * 4, depth=depth)
             logger.info(f"[INGESTION] Discovered {len(pages)} pages, {len(docs)} docs")
 
             all_text = ""
@@ -287,7 +297,7 @@ async def ingest_website(chatbot_id: int, url: str) -> None:
                     continue
 
                 all_text += content + "\n\n"
-                chunks = _chunk_text(content, page_url, chatbot_id)
+                chunks = _chunk_text(content, page_url, chatbot_id, domain=detected_domain)
                 if not chunks:
                     continue
 
@@ -330,7 +340,7 @@ async def ingest_website(chatbot_id: int, url: str) -> None:
                         continue
 
                     all_text += content + "\n\n"
-                    chunks = _chunk_text(content, doc_url, chatbot_id)
+                    chunks = _chunk_text(content, doc_url, chatbot_id, domain=detected_domain)
                     if not chunks:
                         continue
 
@@ -358,16 +368,11 @@ async def ingest_website(chatbot_id: int, url: str) -> None:
                     if temp_path.exists():
                         temp_path.unlink()
 
-            # --- Domain detection ---
-            from backend.utils.domain_intelligence import domain_detector
-            domain = domain_detector.detect(all_text, {"url": url})
-            chatbot.domain = domain
-            chatbot.behavior_profile = domain
             chatbot.status = "ready"
             await db.commit()
 
             logger.info(
-                f"[INGESTION] Complete — chatbot={chatbot_id}, domain={domain}, "
+                f"[INGESTION] Complete — chatbot={chatbot_id}, domain={detected_domain}, "
                 f"pages={len(pages)}, docs={len(docs)}"
             )
 
