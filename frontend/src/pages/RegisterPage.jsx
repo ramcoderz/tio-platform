@@ -154,21 +154,19 @@ export default function RegisterPage() {
           <button
             type="submit"
             disabled={loading}
-            className="btn-glow"
+            className="btn btn-glow"
             style={{
-              width: '100%', padding: '14px',
-              background: loading ? 'rgba(124,58,237,0.4)' : 'linear-gradient(135deg, var(--accent-violet), var(--accent-blue))',
-              border: 'none', borderRadius: '10px', cursor: loading ? 'not-allowed' : 'pointer',
-              color: '#fff', fontWeight: 700, fontSize: '13px', letterSpacing: '0.1em',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
+              width: '100%',
               marginTop: '12px',
-              boxShadow: loading ? 'none' : '0 4px 20px rgba(124,58,237,0.3)',
+              padding: '16px',
+              borderRadius: '14px',
+              opacity: loading ? 0.7 : 1
             }}
           >
             {loading ? (
               <div className="loading-spinner" style={{ width: '18px', height: '18px', borderColor: 'rgba(255,255,255,0.3)', borderTopColor: '#fff' }} />
             ) : (
-              <><UserPlus size={16} /> REGISTER</>
+              <><UserPlus size={18} /> REGISTER NOW</>
             )}
           </button>
         </form>

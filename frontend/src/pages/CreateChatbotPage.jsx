@@ -38,7 +38,8 @@ export default function CreateChatbotPage() {
           setTimeout(() => navigate(`/chat?chatbot_id=${chatbotId}`), 1500);
         } else if (cb.status === 'error') {
           setStatus('error');
-          setError('Ingestion failed. Try a different URL.');
+          const exactReason = cb.error_message || 'Unknown backend error';
+          setError(`Ingestion Failed: ${exactReason}. Please verify the URL or try uploading files manually.`);
           clearInterval(interval);
         }
       } catch { /* silent */ }
@@ -150,14 +151,17 @@ export default function CreateChatbotPage() {
               <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '12px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '16px' }}>
               {STAGES.map((s, i) => (
-                <span key={s} style={{
+                <div key={s} style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px',
                   fontSize: '11px', fontWeight: 600, fontFamily: 'var(--font-mono)',
-                  color: i <= stage ? 'var(--accent)' : 'var(--text-dim)'
+                  color: i <= stage ? 'var(--accent)' : 'var(--text-dim)',
+                  flex: 1, textAlign: 'center'
                 }}>
-                  {i <= stage ? '✓' : '○'} {s}
-                </span>
+                  <span style={{ fontSize: '14px' }}>{i <= stage ? '✓' : '○'}</span>
+                  <span>{s}</span>
+                </div>
               ))}
             </div>
 

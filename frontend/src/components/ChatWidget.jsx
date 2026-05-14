@@ -102,63 +102,97 @@ export default function ChatWidget({
   const [unread, setUnread] = useState(0);
   const [showActions, setShowActions] = useState(true);
   const [skillsOpen, setSkillsOpen] = useState(false);
+  const [wsStatus, setWsStatus] = useState('disconnected');
 
   const wsRef = useRef(null);
   const chatEndRef = useRef(null);
   const inputRef = useRef(null);
-  const sessionId = useRef(`widget_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+  const sessionId = useRef(null);
   const reconnectRef = useRef(0);
 
   const base = apiBase || (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
   const quickActions = DOMAIN_QUICK_ACTIONS[domain] || DOMAIN_QUICK_ACTIONS.general;
 
-  // ── WebSocket connection ──────────────────────────────────────────────────
-  const connectWS = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-    if (reconnectRef.current >= 5) return;
+  // 1. SERIALIZED INITIALIZATION
+  useEffect(() => {
+    if (!chatbotId) return;
+    
+    // Create/Restore session ID with chatbot affinity
+    const storedSession = localStorage.getItem(`tio_widget_session_${chatbotId}`);
+    if (storedSession) {
+      sessionId.current = storedSession;
+    } else {
+      const newId = `guest_${Math.random().toString(36).slice(2, 7)}-c${chatbotId}`;
+      sessionId.current = newId;
+      localStorage.setItem(`tio_widget_session_${chatbotId}`, newId);
+    }
+  }, [chatbotId]);
 
+  // 2. PROTECTED WEBSOCKET CONNECTION
+  const connectWS = useCallback(() => {
+    // GUARDS
+    if (!chatbotId || !sessionId.current) return;
+    if (!sessionId.current.endsWith(`-c${chatbotId}`)) return;
+    if (wsStatus === 'connected' || wsStatus === 'connecting') return;
+
+    setWsStatus('connecting');
     const wsBase = base.replace(/^http/, "ws");
     const token = typeof localStorage !== "undefined" ? (localStorage.getItem("token") || "") : "";
-    const ws = new WebSocket(`${wsBase}/ws/chat/${sessionId.current}?token=${encodeURIComponent(token)}`);
-    wsRef.current = ws;
 
-    ws.onopen = () => { reconnectRef.current = 0; };
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
 
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === "token") {
-          setIsStreaming(false);
-          setMessages(prev => {
-            const last = prev[prev.length - 1];
-            if (last?.role === "assistant" && last._streaming) {
-              return [...prev.slice(0, -1), { ...last, content: last.content + data.content }];
-            }
-            return [...prev, { role: "assistant", content: data.content, _streaming: true }];
-          });
-          if (!isOpen) setUnread(u => u + 1);
-        } else if (data.type === "final") {
-          setIsStreaming(false);
-          setMessages(prev => {
-            const last = prev[prev.length - 1];
-            if (last?.role === "assistant") {
-              return [...prev.slice(0, -1), { role: "assistant", content: data.answer, _streaming: false }];
-            }
-            return prev;
-          });
-        } else if (data.error) {
-          setIsStreaming(false);
-          setMessages(prev => [...prev, { role: "assistant", content: `Something went wrong — ${data.error}` }]);
+    try {
+      const ws = new WebSocket(`${wsBase}/ws/chat/${sessionId.current}?token=${encodeURIComponent(token)}`);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setWsStatus('connected');
+        reconnectRef.current = 0;
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === "token") {
+            setIsStreaming(false);
+            setMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last?.role === "assistant" && last._streaming) {
+                return [...prev.slice(0, -1), { ...last, content: last.content + data.content }];
+              }
+              return [...prev, { role: "assistant", content: data.content, _streaming: true }];
+            });
+            if (!isOpen) setUnread(u => u + 1);
+          } else if (data.type === "final") {
+            setIsStreaming(false);
+            setMessages(prev => {
+              const last = prev[prev.length - 1];
+              if (last?.role === "assistant") {
+                return [...prev.slice(0, -1), { role: "assistant", content: data.answer, _streaming: false }];
+              }
+              return prev;
+            });
+          }
+        } catch { /* ignore */ }
+      };
+
+      ws.onclose = () => {
+        setWsStatus('disconnected');
+        reconnectRef.current++;
+        if (reconnectRef.current < 5) {
+          setTimeout(connectWS, 2000 * reconnectRef.current);
         }
-      } catch { /* ignore malformed frames */ }
-    };
+      };
 
-    ws.onclose = () => {
-      reconnectRef.current++;
-      const delay = Math.min(1000 * Math.pow(2, reconnectRef.current), 15000);
-      setTimeout(connectWS, delay);
-    };
-  }, [base, isOpen]);
+      ws.onerror = () => setWsStatus('error');
+
+    } catch (err) {
+      setWsStatus('error');
+    }
+  }, [base, isOpen, chatbotId, wsStatus]);
 
   useEffect(() => {
     connectWS();

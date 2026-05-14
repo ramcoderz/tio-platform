@@ -13,7 +13,7 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { setUser } = useAppCtx();
-  const { setSessionFromUser } = useChatStore();
+  const { syncSession } = useChatStore();
   const navigate = useNavigate();
 
   const handleLogin = async (e) => {
@@ -29,7 +29,7 @@ export default function LoginPage() {
       localStorage.setItem('token', access_token);
       localStorage.setItem('tio_user_id', loggedUser.id);
       setUser(loggedUser);
-      setSessionFromUser(loggedUser.id);
+      syncSession(loggedUser.id);
       navigate('/');
     } catch (err) {
       setError(err.message || 'Connection error');

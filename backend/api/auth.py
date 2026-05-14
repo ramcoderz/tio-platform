@@ -145,21 +145,24 @@ async def delete_account(creds: HTTPAuthorizationCredentials = Depends(auth_sche
     user = await get_current_user(creds, db)
     user_id = user.id
     
-    user = await db.get(User, user_id)
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    
-    # 1. Cleanup all user conversations and messages (Cascaded)
-    # 2. Cleanup user chatbots
+    from backend.utils.cleanup import deep_delete_chatbot
     from backend.models.entities import Chatbot
-    stmt = select(Chatbot).where(Chatbot.config.contains({"creator_id": user_id})) # Assuming creator_id exists or similar logic
-    # Note: If chatbots aren't strictly owned by users, we might just delete conversations.
-    # But the request says "delete account must delete user profile, chats, session memory, uploaded files, etc."
     
-    # Let's delete conversations explicitly just in case cascades are weak
-    from backend.models.entities import Conversation
-    await db.execute(delete(Conversation).where(Conversation.session_id.like(f"u{user_id}-%")))
+    # 1. Delete all chatbots owned by the user (deep cleanup)
+    stmt = select(Chatbot).where(Chatbot.user_id == user_id)
+    chatbots = (await db.execute(stmt)).scalars().all()
+    for cb in chatbots:
+        await deep_delete_chatbot(cb.id, db)
     
+    # 2. Cleanup orphaned conversations/messages for this user
+    from backend.models.entities import Conversation, Message
+    stmt_conv = select(Conversation).where(Conversation.user_id == user_id)
+    user_convs = (await db.execute(stmt_conv)).scalars().all()
+    for conv in user_convs:
+        await db.execute(delete(Message).where(Message.conversation_id == conv.id))
+        await db.delete(conv)
+    
+    # 3. Delete user profile
     await db.delete(user)
     await db.commit()
     

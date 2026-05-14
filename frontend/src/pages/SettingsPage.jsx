@@ -13,6 +13,7 @@ export default function SettingsPage() {
   const [preferences, setPreferences] = useState({
     private_inference: user?.private_inference || false,
     email: user?.email || '',
+    username: user?.username || '',
   });
 
   useEffect(() => {
@@ -20,6 +21,7 @@ export default function SettingsPage() {
       setPreferences({
         private_inference: !!user.private_inference,
         email: user.email || '',
+        username: user.username || '',
       });
     }
   }, [user]);
@@ -90,7 +92,13 @@ export default function SettingsPage() {
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
             <div>
               <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Username</label>
-              <input className="input" value={user?.username || ''} readOnly style={{ background: 'rgba(255,255,255,0.02)', cursor: 'not-allowed' }} />
+              <input 
+                className="input" 
+                value={preferences.username} 
+                onChange={(e) => setPreferences({...preferences, username: e.target.value})}
+                onBlur={(e) => updatePreference('username', e.target.value)}
+                placeholder="Choose a username"
+              />
             </div>
             <div>
               <label style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '6px' }}>Email Address</label>

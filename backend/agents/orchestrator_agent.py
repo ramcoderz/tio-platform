@@ -1,13 +1,26 @@
 """
-Orchestration: Query → Intent Detection → Hybrid Retrieval → Response
+Orchestrator — the intelligence core of TiO.
 
-Flow is intentionally simple:
-  1. Sanitize input
-  2. Classify intent (lightweight keyword + embedding match)
-  3. Retrieve relevant chunks (hybrid BM25 + vector + RRF)
-  4. Assemble prompt with domain behavior profile
-  5. Stream or generate response
-  6. Sanitize output
+Contextual Prompt Orchestration Pipeline (v2):
+  Uses backend.orchestration.prompt_orchestrator for structured, layered
+  prompt construction. Eliminates the extra LLM planning call.
+
+Pipeline per request:
+  1.  Input sanitization
+  2.  Session isolation (security)
+  3.  Domain detection with confidence
+  4.  Intent detection (keyword + semantic)
+  5.  Query expansion
+  6.  Vector retrieval (RRF + reranking, chatbot-scoped)
+  7.  Confidence scoring
+  8.  Goal memory + rolling summary update
+  9.  Site intelligence loading
+  10. Workflow-aware re-retrieval (if needed)
+  11. Tavily external research (if confidence < threshold)
+  12. Prompt orchestration (layered, deterministic — no extra LLM call)
+  13. LLM generation (Ollama / OpenRouter fallback)
+  14. Response sanitization
+  15. Monitoring + tracking
 """
 
 import asyncio
@@ -27,44 +40,91 @@ from backend.rag.safety import sanitize_input, sanitize_output
 from backend.utils.monitoring import track_query
 from backend.utils.domain_intelligence import domain_detector
 from backend.utils.intent_intelligence import intent_intelligence
+from backend.utils.query_expander import expand_query
+from backend.utils.goal_memory import update_goal, get_or_create_goal
+from backend.utils.confidence import build_confidence_report, build_fallback_message
+from backend.utils.site_intelligence import get_site_context_string
+from backend.memory.service import update_rolling_summary
+from backend.orchestration.prompt_orchestrator import (
+    OrchestrationInput, build_prompt,
+)
+
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
 # ---------------------------------------------------------------------------
-# INTENT DETECTION — lightweight keyword routing
+# ROBOTIC PHRASE FILTER
+# ---------------------------------------------------------------------------
+
+_ROBOTIC_PHRASES = [
+    r"i['']d be happy to help",
+    r"i['']m happy to assist",
+    r"i['']m here to help",
+    r"as an ai",
+    r"as a language model",
+    r"based on the (?:retrieved )?context[,.]?",
+    r"based on the (?:provided )?information[,.]?",
+    r"based on what i(?:'ve| have) found[,.]?",
+    r"could you (?:please )?clarify\??",
+    r"could you (?:please )?specify\??",
+    r"please (?:note that )?i cannot provide",
+    r"i (?:must |need to )?clarify that",
+    r"it['']s important to note that",
+    r"please be aware that",
+    r"i (?:do not|don['']t) have access to real.?time",
+    r"i (?:am|'m) unable to provide",
+    r"of course[,!]? (?:here|let me)",
+    r"certainly[,!]? (?:here|let me|i)",
+    r"absolutely[,!]? (?:here|let me|i)",
+    r"great question[,!]?",
+    r"sure[,!]? (?:here|let me|i)",
+    r"let me help you with that",
+    r"i understand(?: your question)?[,.]?",
+    r"thank you for (?:asking|your question)[,.]?",
+]
+
+_ROBOTIC_RE = [re.compile(p, re.IGNORECASE) for p in _ROBOTIC_PHRASES]
+
+
+def _strip_robotic_phrases(text: str) -> str:
+    for pattern in _ROBOTIC_RE:
+        text = pattern.sub("", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"^\s*[,.:!]\s*", "", text)
+    return text.strip()
+
+
+def _has_placeholders(text: str) -> bool:
+    return bool(re.search(r'\[[A-Z][^\]]{2,40}\]', text))
+
+
+def _strip_placeholders(text: str) -> str:
+    return re.sub(r'\[[A-Z][^\]]{2,40}\]', 'relevant content', text)
+
+
+# ---------------------------------------------------------------------------
+# INTENT DETECTION
 # ---------------------------------------------------------------------------
 
 INTENT_PATTERNS: dict[str, list[str]] = {
-    # Tourism
-    "tourism_planner": ["plan", "itinerary", "trip", "travel", "visit", "schedule", "route", "weekend"],
-    "attraction_recommender": ["attractions", "things to do", "places to see", "must see", "popular"],
-    "ride_optimizer": ["wait time", "queue", "rides", "skip the line", "fast pass"],
-    
-    # Education
-    "course_finder": ["course", "program", "major", "degree", "study", "curriculum", "syllabus"],
-    "admission_assistant": ["admission", "apply", "enroll", "deadline", "requirements", "eligibility"],
-    "scholarship_helper": ["scholarship", "financial aid", "grant", "funding", "bursary"],
-    
-    # Medical
-    "dept_navigator": ["department", "specialist", "pain", "symptom", "doctor", "consult", "hospital"],
-    "appointment_guidance": ["appointment", "book", "schedule", "visiting hours", "contact"],
-    "insurance_assistant": ["insurance", "coverage", "billing", "payment", "claims"],
-    
-    # Developer
-    "api_assistant": ["api", "sdk", "code", "endpoint", "authenticate", "bearer", "token"],
-    "integration_helper": ["integrate", "integration", "webhook", "event", "flow", "setup"],
-    "sdk_guide": ["install", "library", "npm", "pip", "package", "init"],
-    
-    # Ecommerce
-    "shopping_guide": ["product", "buy", "price", "pricing", "catalog", "compare", "best"],
-    
-    # General
-    "doc_summarizer": ["summarize", "summary", "overview", "what is this", "tell me about", "highlights"],
+    "tourism_planner":          ["plan", "itinerary", "trip", "travel", "visit", "schedule", "route", "weekend"],
+    "attraction_recommender":   ["attractions", "things to do", "places to see", "must see", "popular", "best places"],
+    "ride_optimizer":           ["wait time", "queue", "rides", "skip the line", "fast pass", "thrill"],
+    "course_finder":            ["course", "program", "major", "degree", "study", "curriculum", "syllabus"],
+    "admission_assistant":      ["admission", "apply", "enroll", "deadline", "requirements", "eligibility"],
+    "scholarship_helper":       ["scholarship", "financial aid", "grant", "funding", "bursary", "fees"],
+    "dept_navigator":           ["department", "specialist", "pain", "symptom", "doctor", "consult", "hospital"],
+    "appointment_guidance":     ["appointment", "book", "schedule", "visiting hours", "contact", "reserve"],
+    "insurance_assistant":      ["insurance", "coverage", "billing", "payment", "claims", "premium"],
+    "api_assistant":            ["api", "sdk", "code", "endpoint", "authenticate", "bearer", "token", "rest"],
+    "integration_helper":       ["integrate", "integration", "webhook", "event", "flow", "setup", "connect"],
+    "sdk_guide":                ["install", "library", "npm", "pip", "package", "init", "import"],
+    "shopping_guide":           ["product", "buy", "price", "pricing", "catalog", "compare", "best", "order"],
+    "doc_summarizer":           ["summarize", "summary", "overview", "what is this", "tell me about", "highlights"],
 }
 
-# Domain → which skills are eligible
 DOMAIN_SKILL_MAP: dict[str, list[str]] = {
     "tourism":   ["tourism_planner", "attraction_recommender", "ride_optimizer", "doc_summarizer"],
     "education": ["course_finder", "admission_assistant", "scholarship_helper", "doc_summarizer"],
@@ -75,31 +135,50 @@ DOMAIN_SKILL_MAP: dict[str, list[str]] = {
 }
 
 
-def detect_intent(query: str, domain: str | None) -> str:
-    """
-    Hybrid intent detection: Keyword patterns + Semantic similarity.
-    Returns the most likely skill name, or 'general_chat' if no pattern matches.
-    """
+def detect_intent(query: str, domain: str | None) -> tuple[str, int, float]:
     q = query.lower()
-    # Domain Locking: Strictly restrict skills to the domain
     if domain and domain != "general":
         eligible = DOMAIN_SKILL_MAP.get(domain, ["doc_summarizer"])
     else:
         eligible = list(INTENT_PATTERNS.keys())
 
-    # 1. Keyword check
     scores: dict[str, int] = {skill: 0 for skill in eligible}
     for skill in eligible:
         for kw in INTENT_PATTERNS.get(skill, []):
             if kw in q:
                 scores[skill] += 1
 
-    best_keyword_skill = max(scores, key=scores.get, default="general_chat")
-    if scores.get(best_keyword_skill, 0) > 0:
-        return best_keyword_skill
-        
-    # 2. Semantic fallback
-    return intent_intelligence.detect(query, eligible_skills=eligible)
+    best_kw_skill = max(scores, key=scores.get, default="doc_summarizer")
+    kw_score = scores.get(best_kw_skill, 0)
+    if kw_score > 0:
+        return best_kw_skill, kw_score, 0.6
+
+    sem_intent = intent_intelligence.detect(query, eligible_skills=eligible)
+    return sem_intent, 0, 0.5
+
+
+# ---------------------------------------------------------------------------
+# PROACTIVE SUGGESTION ENGINE
+# ---------------------------------------------------------------------------
+
+def get_proactive_suggestions(domain: str, intent: str, goal: str | None = None) -> list[str]:
+    base_suggestions = {
+        "tourism":   ["Tell me about top attractions", "Plan a 3-day itinerary", "Show local hotels"],
+        "education": ["View admission requirements", "Find available scholarships", "Browse course catalog"],
+        "medical":   ["Book an appointment", "Find a specialist", "View insurance coverage"],
+        "developer": ["Show API authentication", "View integration guide", "Download SDK"],
+        "ecommerce": ["View latest offers", "Track my order", "Check return policy"],
+        "general":   ["Summarize this site", "What services are offered?", "Contact support"],
+    }
+    intent_suggestions = {
+        "tourism_planner":     ["Add child-friendly spots", "Suggest budget options", "Check weather for my trip"],
+        "admission_assistant": ["Check deadline for fall semester", "Required documents", "Contact admissions"],
+        "api_assistant":       ["Show cURL examples", "View error codes", "Check rate limits"],
+    }
+    res = intent_suggestions.get(intent, [])
+    if not res:
+        res = base_suggestions.get(domain, base_suggestions["general"])
+    return res[:3]
 
 
 # ---------------------------------------------------------------------------
@@ -107,33 +186,27 @@ def detect_intent(query: str, domain: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 async def _get_context(
-    query: str, chatbot_id: int | None, domain: str | None = None
-) -> tuple[list, str, float]:
-    """Run hybrid retrieval, return (chunks, context_str, retrieval_ms)."""
+    query: str,
+    chatbot_id: int | None,
+    domain: str | None = None,
+    workflow: str | None = None,
+) -> tuple[list, float]:
     t0 = time.monotonic()
-    chunks = await async_retrieve(query, top_k=settings.top_k, chatbot_id=chatbot_id, domain=domain)
-    elapsed = (time.monotonic() - t0) * 1000
+    chunks = await async_retrieve(query, top_k=settings.top_k, chatbot_id=chatbot_id, domain=domain, workflow=workflow)
+    elapsed_ms = (time.monotonic() - t0) * 1000
 
-    # Strict Validation: Ensure every chunk belongs to the chatbot
     if chatbot_id:
-        valid_chunks = [c for c in chunks if c.metadata.get("chatbot_id") == chatbot_id]
-        if len(valid_chunks) < len(chunks):
-            logger.warning(f"[SECURITY] Filtered out {len(chunks) - len(valid_chunks)} mismatched chunks for chatbot_id={chatbot_id}")
-            chunks = valid_chunks
+        before = len(chunks)
+        chunks = [c for c in chunks if c.metadata.get("chatbot_id") == chatbot_id]
+        filtered = before - len(chunks)
+        if filtered > 0:
+            logger.warning(f"[SECURITY] Filtered {filtered} cross-chatbot chunks for chatbot_id={chatbot_id}")
 
-    if not chunks:
-        logger.warning(f"[RETRIEVAL] No valid chunks found for query: {query!r} (chatbot={chatbot_id})")
-        return [], "", elapsed
-
-    context_str = "\n\n".join(
-        f"[Source {i+1}: {c.document}]\n{c.text}"
-        for i, c in enumerate(chunks)
-    )
-    return chunks, context_str, elapsed
+    return chunks, elapsed_ms
 
 
 # ---------------------------------------------------------------------------
-# CHATBOT LOOKUP
+# CHATBOT LOOKUP + SESSION ISOLATION
 # ---------------------------------------------------------------------------
 
 async def _get_chatbot(
@@ -144,68 +217,254 @@ async def _get_chatbot(
     chatbot = None
     if chatbot_id:
         chatbot = await db.get(Chatbot, chatbot_id)
-    
-    if session_id:
-        stmt = select(Conversation).where(Conversation.session_id == session_id)
+
+    if session_id and chatbot_id:
+        stmt = select(Conversation).where(
+            Conversation.session_id == session_id,
+            Conversation.chatbot_id == chatbot_id,
+        )
         conv = (await db.execute(stmt)).scalar_one_or_none()
-        if conv:
-            if chatbot_id and conv.chatbot_id != chatbot_id:
-                logger.error(f"[SECURITY] Session/Chatbot mismatch! session={session_id} belongs to bot {conv.chatbot_id}, but bot {chatbot_id} requested.")
+        if conv is None:
+            other = (await db.execute(
+                select(Conversation).where(Conversation.session_id == session_id)
+            )).scalar_one_or_none()
+            if other and other.chatbot_id != chatbot_id:
+                logger.error(
+                    f"[SECURITY] Session isolation violation: session={session_id} "
+                    f"belongs to chatbot={other.chatbot_id}, requested={chatbot_id}. Denying."
+                )
                 return None
-            if not chatbot:
-                chatbot = await db.get(Chatbot, conv.chatbot_id)
 
     return chatbot
 
 
 # ---------------------------------------------------------------------------
-# PROMPT ASSEMBLY
+# DOMAIN DETECTION
 # ---------------------------------------------------------------------------
 
-def _build_prompt(
+def _detect_domain_with_confidence(
+    query: str, chatbot: "Chatbot | None"
+) -> tuple[str, float]:
+    chatbot_domain = chatbot.domain if chatbot else None
+    if chatbot_domain and chatbot_domain != "general":
+        return chatbot_domain, 0.95
+
+    detected_domain = domain_detector.detect(query, {"url": chatbot.website_url if chatbot else ""})
+    scores = domain_detector.get_scores(query, {"url": chatbot.website_url if chatbot else ""})
+    if not scores:
+        return "general", 0.3
+
+    sorted_scores = sorted(scores, key=lambda x: x.score, reverse=True)
+    top = sorted_scores[0]
+    second = sorted_scores[1].score if len(sorted_scores) > 1 else 0.0
+    gap = (top.score - second) / (top.score + 1e-9)
+    conf = min(0.4 + gap * 0.5, 0.95) if top.score > 1.0 else 0.3
+    return detected_domain, round(conf, 2)
+
+
+# ---------------------------------------------------------------------------
+# POST-PROCESSING
+# ---------------------------------------------------------------------------
+
+def _post_process_answer(answer: str) -> tuple[str, bool]:
+    had_warning = False
+    answer = _strip_robotic_phrases(answer)
+    answer = sanitize_output(answer)
+    if _has_placeholders(answer):
+        had_warning = True
+        logger.warning("[ORCHESTRATOR] Bracket placeholder detected — stripping.")
+        answer = _strip_placeholders(answer)
+        if _has_placeholders(answer):
+            answer = (
+                "The specific details for that query weren't clearly identified in the site content. "
+                "I can provide a general overview instead — what would you like to know more about?"
+            )
+    answer = re.sub(r'\s+', ' ', answer).strip()
+    return answer, had_warning
+
+
+# ---------------------------------------------------------------------------
+# TAVILY SEARCH (with retry + timeout)
+# ---------------------------------------------------------------------------
+
+async def _fetch_tavily(query: str, chatbot_website: str | None = None) -> list[dict]:
+    """
+    Fetch Tavily results with retry + timeout.
+    Scoped query: prepend site domain if available for better relevance.
+    """
+    from backend.llm.tavily_client import tavily_client
+    from backend.utils.api_usage_tracker import track_api_call
+
+    scoped_query = query
+    if chatbot_website:
+        from urllib.parse import urlparse
+        domain = urlparse(chatbot_website).netloc.replace("www.", "")
+        if domain:
+            scoped_query = f"site:{domain} {query}"
+
+    for attempt in range(2):  # 1 retry
+        try:
+            results = await asyncio.wait_for(
+                tavily_client.search(scoped_query, search_depth="basic", max_results=5),
+                timeout=8.0,
+            )
+            if results:
+                track_api_call("tavily")
+                logger.info(f"[TAVILY] {len(results)} results for: {query!r} (attempt {attempt+1})")
+                return results
+        except asyncio.TimeoutError:
+            logger.warning(f"[TAVILY] Timeout on attempt {attempt+1}")
+        except Exception as e:
+            logger.warning(f"[TAVILY] Error on attempt {attempt+1}: {e}")
+        if attempt == 0:
+            await asyncio.sleep(0.5)
+
+    return []
+
+
+# ---------------------------------------------------------------------------
+# SHARED PIPELINE CORE
+# (used by both run_orchestration and run_orchestration_stream)
+# ---------------------------------------------------------------------------
+
+async def _run_pipeline(
     query: str,
     history: list[dict],
-    context_str: str,
-    bp,
-    intent: str,
-) -> str:
-    no_context_note = (
-        "No specific content was retrieved from the knowledge base for this query. "
-        "Provide the most helpful answer you can from your domain knowledge without fabricating specific facts."
+    db: AsyncSession,
+    chatbot_id: int | None = None,
+    session_id: str | None = None,
+    domain: str | None = None,
+    profile: str | None = None,
+) -> tuple[OrchestrationInput, dict, float]:
+    """
+    Runs everything up to (but not including) LLM generation.
+    Returns (orchestration_input, confidence_report_dict, retrieval_ms).
+    """
+    from backend.utils.api_usage_tracker import track_api_call
+
+    # 1. Sanitize
+    query = sanitize_input(query)
+
+    # 2. Session isolation
+    chatbot = await _get_chatbot(db, chatbot_id, session_id)
+    if chatbot is None and chatbot_id:
+        raise ValueError("session_isolation_failed")
+
+    effective_id = chatbot.id if chatbot else None
+
+    # 3. Domain detection
+    effective_domain, domain_conf = _detect_domain_with_confidence(query, chatbot)
+    if domain:
+        effective_domain = domain
+        domain_conf = 0.95
+
+    # 4. Intent detection
+    intent, kw_score, sem_score = detect_intent(query, effective_domain)
+
+    # 5. Query expansion
+    expanded_query = expand_query(query, domain=effective_domain)
+    if expanded_query != query.lower():
+        logger.debug(f"[EXPAND] '{query}' → '{expanded_query}'")
+
+    # 6. Retrieval
+    chunks, retrieval_ms = await _get_context(expanded_query, effective_id, domain=effective_domain)
+
+    # 7. Confidence scoring
+    from backend.utils.domain_intelligence import domain_detector as _dd
+    domain_scores = _dd.get_scores(query, {"url": chatbot.website_url if chatbot else ""})
+    confidence = build_confidence_report(
+        chunks=chunks, query=query, domain=effective_domain, intent=intent,
+        keyword_score=kw_score, semantic_score=sem_score, detected_scores=domain_scores,
     )
 
+    # 8. Goal memory + rolling summary
+    goal = None
+    rolling_summary = ""
+    if session_id and effective_id:
+        from backend.memory.service import get_conversation_by_session
+        conv = await get_conversation_by_session(db, session_id, effective_id)
+        goal = await update_goal(db, session_id, effective_id, query, intent, domain=effective_domain)
+        if conv:
+            rolling_summary = await update_rolling_summary(db, conv.id)
+
+    # 9. Site intelligence
+    site_profile: dict = {}
+    if chatbot and chatbot.site_profile:
+        site_profile = chatbot.site_profile
+
+    # 10. Workflow-aware re-retrieval (if first pass empty)
+    if goal and goal.active_workflow and not chunks:
+        chunks, _ = await _get_context(
+            expanded_query, effective_id,
+            domain=effective_domain, workflow=goal.active_workflow,
+        )
+
+    # 11. Tavily external research (if low confidence)
+    tavily_results: list[dict] = []
+    tavily_triggered = False
+    if not chunks or (confidence.retrieval_confidence < 0.3 and len(query.split()) > 3):
+        tavily_triggered = True
+        tavily_results = await _fetch_tavily(query, chatbot.website_url if chatbot else None)
+        logger.info(
+            f"[ORCHESTRATOR] Tavily triggered (confidence={confidence.retrieval_confidence:.2f}), "
+            f"got {len(tavily_results)} results"
+        )
+
+    # 12. LLM API tracking
+    track_api_call("ollama" if await ollama_client.is_available() else "openrouter")
+
+    # 13. Build OrchestrationInput
+    bp = get_profile(profile or effective_domain)
     skill_guidance = get_skill_guidance(intent)
 
-    system = (
-        f"{bp.instructions}\n\n"
-        f"TONE: {bp.tone}\n\n"
-        f"SKILL GUIDANCE: {skill_guidance}\n\n"
-        f"RETRIEVED CONTEXT:\n{context_str if context_str else no_context_note}\n\n"
-        f"DETECTED INTENT: {intent.replace('_', ' ')}"
+    session_entities: list[str] = []
+    if goal and goal.state_json:
+        session_entities = goal.state_json.get("discovered_entities", [])
+
+    orch_input = OrchestrationInput(
+        query=query,
+        history=history,
+        domain=effective_domain,
+        intent=intent,
+        conversation_mode=goal.conversation_mode if goal else "exploratory",
+        chunks=chunks,
+        retrieval_confidence=confidence.retrieval_confidence,
+        chatbot_name=chatbot.name if chatbot else "Assistant",
+        chatbot_tone=bp.tone,
+        bp_instructions=bp.instructions,
+        site_profile=site_profile,
+        rolling_summary=rolling_summary,
+        active_workflow=goal.active_workflow if goal else None,
+        workflow_stage=goal.workflow_stage if goal else "browsing",
+        current_goal=goal.current_goal if goal else None,
+        user_type=(goal.state_json or {}).get("user_type", "new_visitor") if goal else "new_visitor",
+        session_entities=session_entities,
+        tavily_results=tavily_results,
+        tavily_triggered=tavily_triggered,
+        skill_guidance=skill_guidance,
     )
 
-    parts = [f"SYSTEM: {system}"]
-    for h in history[-8:]:  # cap history at last 8 turns to avoid token bloat
-        role = h.get("role", "user").upper()
-        parts.append(f"{role}: {h['content']}")
-    
-    # Add high-priority constraints at the very end (recency bias)
-    constraints = (
-        "CRITICAL CONSTRAINTS (DO NOT IGNORE):\n"
-        "- NEVER use placeholders or bracketed tags like [Place], [Institution], or [Details].\n"
-        "- If specific names or data are not in the RETRIEVED CONTEXT, admit it clearly.\n"
-        "- Do NOT use generic templates for tourist attractions if names are missing."
-    )
-    parts.append(f"INSTRUCTION: {constraints}")
-    
-    parts.append(f"USER: {query}")
-    parts.append("ASSISTANT:")
+    conf_dict = {
+        "retrieval_confidence": confidence.retrieval_confidence,
+        "overall": confidence.overall,
+        "should_infer": confidence.should_infer,
+        "fallback_reason": confidence.fallback_reason,
+        "domain_conf": domain_conf,
+        "intent": intent,
+        "domain": effective_domain,
+        "kw_score": kw_score,
+        "sem_score": sem_score,
+        "effective_id": effective_id,
+        "bp": bp,
+        "goal": goal,
+        "confidence_obj": confidence,
+    }
 
-    return "\n".join(parts)
+    return orch_input, conf_dict, retrieval_ms
 
 
 # ---------------------------------------------------------------------------
-# PUBLIC API — Non-streaming (HTTP /chat fallback)
+# PUBLIC API — Non-streaming (HTTP /chat)
 # ---------------------------------------------------------------------------
 
 async def run_orchestration(
@@ -217,74 +476,89 @@ async def run_orchestration(
     domain: str | None = None,
     profile: str | None = None,
 ) -> dict:
-    query = sanitize_input(query)
-    
-    # 1. Normalize query for better retrieval
-    normalized_query = intent_intelligence.normalize_query(query)
-    if normalized_query != query.lower():
-        logger.info(f"[ORCHESTRATOR] Normalized query: {query} -> {normalized_query}")
-    
-    chatbot = await _get_chatbot(db, chatbot_id, session_id)
-    effective_id = chatbot.id if chatbot else None
-    
-    # Domain Intelligence fallback
-    chatbot_domain = chatbot.domain if chatbot else None
-    if not chatbot_domain or chatbot_domain == "general":
-        # Check if we can detect it from context or query
-        detected = domain_detector.detect(query, {"url": chatbot.website_url if chatbot else ""})
-        effective_domain = detected if detected != "general" else "general"
-    else:
-        effective_domain = chatbot_domain
 
-    effective_domain = domain or effective_domain
+    # Pipeline
+    try:
+        orch_input, conf, retrieval_ms = await _run_pipeline(
+            query=query, history=history, db=db,
+            chatbot_id=chatbot_id, session_id=session_id,
+            domain=domain, profile=profile,
+        )
+    except ValueError as e:
+        if "session_isolation_failed" in str(e):
+            return {
+                "answer": "Session error: unable to verify chatbot identity. Please refresh and try again.",
+                "citations": [], "intent": "error", "domain": "general", "profile": "general",
+            }
+        raise
 
-    # Intent
-    intent = detect_intent(query, effective_domain)
+    goal = conf["goal"]
+    bp = conf["bp"]
+    confidence = conf["confidence_obj"]
+    intent = conf["intent"]
+    effective_domain = conf["domain"]
 
-    # Retrieval (use normalized query for better grounding)
-    chunks, context_str, retrieval_ms = await _get_context(normalized_query, effective_id, domain=effective_domain)
+    # Graceful fallback if no content at all
+    if not orch_input.chunks and not orch_input.tavily_results and not confidence.should_infer:
+        fallback_msg = build_fallback_message(confidence, effective_domain)
+        return {
+            "answer": fallback_msg,
+            "citations": [],
+            "intent": intent,
+            "suggestions": bp.suggestions,
+            "domain": effective_domain,
+            "profile": bp.name,
+            "confidence": confidence.overall,
+        }
 
-    # Profile
-    bp = get_profile(profile or effective_domain)
+    # Build layered prompt
+    orch_output = build_prompt(orch_input)
 
-    # Prompt
-    prompt = _build_prompt(query, history, context_str, bp, intent)
-
-    # Generate
+    # LLM generation
     t0 = time.monotonic()
-    answer = await ollama_client.generate(prompt, model=settings.ollama_model)
-    
-    # Post-generation validation: Check for bracketed placeholders
-    if "[" in answer and "]" in answer:
-        logger.warning(f"[ORCHESTRATOR] Placeholder detected in answer. Stripping brackets...")
-        # Simple fix: remove brackets and content inside if it looks like a placeholder
-        answer = re.sub(r'\[[A-Z][^\]]+\]', 'relevant areas', answer)
-        # If it still has brackets, try one more generation with a stricter prompt or just return a safe fallback
-        if "[" in answer and "]" in answer:
-            answer = "I'm sorry, I couldn't identify specific entities for that request in the indexed context. The destination offers various attractions and services related to its domain."
-            
+    raw_answer = await ollama_client.generate(orch_output.prompt, model=settings.ollama_model)
     llm_ms = (time.monotonic() - t0) * 1000
-    answer = sanitize_output(answer)
 
-    # Log
+    # Post-process
+    answer, had_warning = _post_process_answer(raw_answer)
+
+    # Track
     await track_query(
         query=query,
         intent=intent,
         domain=effective_domain,
-        retrieved_chunks=len(chunks),
+        retrieved_chunks=len(orch_input.chunks),
         retrieval_ms=retrieval_ms,
         llm_ms=llm_ms,
-        answered=bool(chunks),
-        citations=len(chunks),
+        answered=bool(orch_input.chunks or orch_input.tavily_results),
+        confidence=confidence.overall,
+        fallback=not confidence.should_infer,
+        hallucination_warning=had_warning,
+        conversation_mode=goal.conversation_mode if goal else "exploratory",
+        domain_mismatch=conf["domain_conf"] < 0.4,
     )
+
+    # Monitoring for orchestration quality
+    logger.info(
+        f"[ORCH] prompt_tokens={orch_output.prompt_tokens_est} "
+        f"orch_ms={orch_output.orchestration_ms:.1f} llm_ms={llm_ms:.0f} "
+        f"tavily={orch_output.tavily_used} compressed={orch_output.context_compressed}"
+    )
+
+    suggestions = get_proactive_suggestions(effective_domain, intent, goal.current_goal if goal else None)
 
     return {
         "answer": answer,
-        "citations": [c.__dict__ for c in chunks],
+        "citations": [c.__dict__ for c in orch_input.chunks],
         "intent": intent,
-        "suggestions": bp.suggestions if not history else [],
+        "suggestions": suggestions if not history else [],
         "domain": effective_domain,
         "profile": bp.name,
+        "confidence": confidence.overall,
+        "goal": goal.current_goal if goal else None,
+        "conversation_mode": goal.conversation_mode if goal else "exploratory",
+        "response_plan": orch_output.response_plan,
+        "tavily_used": orch_output.tavily_used,
     }
 
 
@@ -299,58 +573,97 @@ async def run_orchestration_stream(
     chatbot_id: int | None = None,
     session_id: str | None = None,
 ):
-    query = sanitize_input(query)
-    
-    # Normalize query for better retrieval
-    normalized_query = intent_intelligence.normalize_query(query)
-    
-    chatbot = await _get_chatbot(db, chatbot_id, session_id)
-    effective_id = chatbot.id if chatbot else None
-    
-    # Domain Intelligence fallback
-    chatbot_domain = chatbot.domain if chatbot else None
-    if not chatbot_domain or chatbot_domain == "general":
-        detected = domain_detector.detect(query, {"url": chatbot.website_url if chatbot else ""})
-        effective_domain = detected if detected != "general" else "general"
-    else:
-        effective_domain = chatbot_domain
+    # Pipeline
+    try:
+        orch_input, conf, retrieval_ms = await _run_pipeline(
+            query=query, history=history, db=db,
+            chatbot_id=chatbot_id, session_id=session_id,
+        )
+    except ValueError as e:
+        if "session_isolation_failed" in str(e):
+            yield {"type": "error", "content": "Session isolation: chatbot identity mismatch. Please refresh."}
+            return
+        raise
 
-    # Intent
-    intent = detect_intent(query, effective_domain)
+    goal = conf["goal"]
+    bp = conf["bp"]
+    confidence = conf["confidence_obj"]
+    intent = conf["intent"]
+    effective_domain = conf["domain"]
 
-    # Retrieval (use normalized query for better grounding)
-    chunks, context_str, retrieval_ms = await _get_context(normalized_query, effective_id)
-
-    # Emit metadata before streaming starts
+    # Emit metadata immediately
     yield {
         "type": "metadata",
-        "citations": [c.__dict__ for c in chunks],
+        "citations": [c.__dict__ for c in orch_input.chunks],
         "intent": intent,
         "domain": effective_domain,
+        "confidence": confidence.overall,
+        "conversation_mode": goal.conversation_mode if goal else "exploratory",
+        "goal": goal.current_goal if goal else None,
+        "tavily_triggered": orch_input.tavily_triggered,
     }
 
-    # Profile + Prompt
-    bp = get_profile(effective_domain)
-    prompt = _build_prompt(query, history, context_str, bp, intent)
+    # Graceful fallback
+    if not orch_input.chunks and not orch_input.tavily_results and not confidence.should_infer:
+        fallback_msg = build_fallback_message(confidence, effective_domain)
+        yield {"type": "token", "content": fallback_msg}
+        yield {"type": "final", "answer": fallback_msg, "citations": [], "confidence": confidence.overall}
+        return
 
-    # Stream
+    # Build layered prompt
+    orch_output = build_prompt(orch_input)
+
+    # Emit response plan as thought (for transparency in UI)
+    plan = orch_output.response_plan
+    thought = (
+        f"Goal: {plan['goal']} | "
+        f"Structure: {plan['response_structure']} | "
+        f"Workflow: {plan['workflow']}"
+    )
+    yield {"type": "thought", "content": thought}
+
+    # Stream generation
     t0 = time.monotonic()
     full_answer = ""
-    async for token in ollama_client.generate_stream(prompt, model=settings.ollama_model):
+    async for token in ollama_client.generate_stream(orch_output.prompt, model=settings.ollama_model):
         full_answer += token
         yield {"type": "token", "content": token}
 
     llm_ms = (time.monotonic() - t0) * 1000
 
-    # Log after stream completes
+    # Post-process
+    cleaned, had_warning = _post_process_answer(full_answer)
+
+    # Track
     await track_query(
         query=query,
         intent=intent,
         domain=effective_domain,
-        retrieved_chunks=len(chunks),
+        retrieved_chunks=len(orch_input.chunks),
         retrieval_ms=retrieval_ms,
         llm_ms=llm_ms,
-        answered=bool(chunks),
-        citations=len(chunks),
+        answered=bool(orch_input.chunks or orch_input.tavily_results),
+        confidence=confidence.overall,
+        fallback=not confidence.should_infer,
+        hallucination_warning=had_warning,
+        conversation_mode=goal.conversation_mode if goal else "exploratory",
+        domain_mismatch=conf["domain_conf"] < 0.4,
     )
 
+    logger.info(
+        f"[ORCH STREAM] prompt_tokens={orch_output.prompt_tokens_est} "
+        f"orch_ms={orch_output.orchestration_ms:.1f} llm_ms={llm_ms:.0f} "
+        f"tavily={orch_output.tavily_used}"
+    )
+
+    suggestions = get_proactive_suggestions(effective_domain, intent, goal.current_goal if goal else None)
+    yield {
+        "type": "final",
+        "answer": cleaned,
+        "citations": [c.__dict__ for c in orch_input.chunks],
+        "confidence": confidence.overall,
+        "suggestions": suggestions if not history else [],
+        "goal": goal.current_goal if goal else None,
+        "response_plan": orch_output.response_plan,
+        "tavily_used": orch_output.tavily_used,
+    }

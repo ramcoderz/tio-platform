@@ -36,8 +36,10 @@ export default function AppShell({ children }) {
         setChatbots(data || []);
       } catch (err) { /* silent */ }
     };
-    fetchChatbots();
-  }, [location.pathname]);
+    if (user) {
+      fetchChatbots();
+    }
+  }, [location.pathname, user]);
 
   const isAuth = location.pathname === '/login' || location.pathname === '/register';
   const isChat = location.pathname === '/chat';

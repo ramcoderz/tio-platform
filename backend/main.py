@@ -15,6 +15,11 @@ from backend.websocket.chat_socket import websocket_router
 from backend.tasks.document_cleanup import auto_cleanup_worker
 from backend.vectorstore.service import initialize_vectorstore
 import asyncio
+import sys
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 import logging
 from backend.utils.logging_collector import setup_admin_logging
 
@@ -36,6 +41,8 @@ async def lifespan(_: FastAPI):
         Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
         Path(settings.chroma_dir).mkdir(parents=True, exist_ok=True)
         logger.info(f"Directories verified: {settings.upload_dir}, {settings.chroma_dir}")
+        from backend.db.migrate import migrate_db
+        migrate_db()
         await init_db()
         logger.info("Database initialized successfully.")
         

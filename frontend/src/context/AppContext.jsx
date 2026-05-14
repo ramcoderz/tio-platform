@@ -15,7 +15,7 @@ export function AppProvider({ children }) {
           .then((u) => {
             setUser(u);
             // Anchor session to this user account
-            useChatStore.getState().setSessionFromUser(u.id);
+            useChatStore.getState().syncSession(u.id);
           })
           .catch(() => {
             localStorage.removeItem("token");

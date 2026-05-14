@@ -69,10 +69,12 @@ class Scraper:
         self.ignored_patterns = [
             r"/privacy", r"/cookies", r"/terms", r"/legal",
             r"/track", r"/login", r"/signup", r"/logout",
+            r"/license", r"/disclaimer", r"/copyright",
         ]
         self.priority_keywords = [
             "about", "services", "faq", "docs", "products",
             "courses", "departments", "support", "attractions",
+            "pricing", "features", "api", "admission",
         ]
 
     # -----------------------------------------------------------------------
@@ -80,17 +82,30 @@ class Scraper:
     # -----------------------------------------------------------------------
 
     async def extract_content(self, url: str) -> str:
-        """Extract semantic content from a URL using Trafilatura."""
+        """Extract semantic content from a URL using Trafilatura with fallback."""
         try:
             downloaded = await asyncio.to_thread(trafilatura.fetch_url, url)
             if not downloaded:
                 downloaded = await self._fetch_with_playwright(url)
+            
+            # Use Trafilatura for core extraction
             content = trafilatura.extract(
                 downloaded,
                 include_comments=False,
                 include_tables=True,
                 no_fallback=False,
+                output_format="txt",
             )
+            
+            # If trafilatura fails to get meaningful text, use BeautifulSoup for raw extraction
+            if not content or len(content.split()) < 30:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(downloaded, "html.parser")
+                # Remove scripts, styles, and nav
+                for s in soup(["script", "style", "nav", "footer", "header"]):
+                    s.decompose()
+                content = soup.get_text(separator="\n", strip=True)
+                
             return content or ""
         except Exception as e:
             logger.warning(f"[SCRAPER] extract_content error for {url}: {e}")
@@ -103,6 +118,8 @@ class Scraper:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
                 page = await browser.new_page()
+                # Use a real user agent to avoid bot detection
+                await page.set_extra_http_headers({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
                 await page.goto(url, wait_until="networkidle", timeout=60_000)
                 content = await page.content()
                 await browser.close()
@@ -116,7 +133,7 @@ class Scraper:
     # -----------------------------------------------------------------------
 
     async def discover_assets(
-        self, base_url: str, limit: int = 20, depth: int = 1
+        self, base_url: str, limit: int = 20, depth: int = 1, allow_external: bool = False
     ) -> tuple[list[str], list[str]]:
         """
         Crawl the website up to `depth` levels deep.
@@ -136,7 +153,10 @@ class Scraper:
                 browser = await p.chromium.launch(headless=True)
                 page = await browser.new_page()
 
-                while to_visit and len(discovered_pages) + len(discovered_docs) < limit * 5:
+                while to_visit and len(discovered_pages) + len(discovered_docs) < limit * 10:
+                    # Sort to_visit by priority on each iteration
+                    to_visit = sorted(to_visit, key=lambda x: self._score_url(base_url)(x[0]), reverse=True)
+                    
                     current_url, current_depth = to_visit.pop(0)
                     if current_url in visited or current_depth > depth:
                         continue
@@ -149,9 +169,10 @@ class Scraper:
                         )
                         for link in links:
                             parsed = urlparse(link)
-                            if parsed.netloc != domain:
+                            if not allow_external and parsed.netloc != domain:
                                 continue
 
+                            # Normalize URL
                             clean_link = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
                             if clean_link.endswith("/"):
                                 clean_link = clean_link[:-1]
@@ -163,14 +184,15 @@ class Scraper:
                                 discovered_docs.add(clean_link)
                                 continue
 
-                            # Skip binaries
+                            # Skip binaries and noise
                             if any(path_lower.endswith(ext) for ext in {
                                 ".exe", ".zip", ".rar", ".msi", ".js", ".css",
                                 ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+                                ".woff", ".woff2", ".ttf",
                             }):
                                 continue
 
-                            # Skip noise patterns
+                            # Skip noise patterns (Privacy, Login, etc.)
                             if any(re.search(pat, clean_link.lower()) for pat in self.ignored_patterns):
                                 continue
 
@@ -179,7 +201,7 @@ class Scraper:
                                 if current_depth + 1 <= depth:
                                     to_visit.append((clean_link, current_depth + 1))
 
-                        if len(discovered_pages) + len(discovered_docs) >= limit * 5:
+                        if len(discovered_pages) + len(discovered_docs) >= limit * 10:
                             break
                     except Exception as e:
                         logger.debug(f"[SCRAPER] Error visiting {current_url}: {e}")
@@ -188,8 +210,10 @@ class Scraper:
         except Exception as e:
             logger.warning(f"[SCRAPER] discover_assets error for {base_url}: {e}")
 
-        sorted_pages = sorted(discovered_pages, key=self._score_url(base_url), reverse=True)[:limit]
-        sorted_docs = sorted(discovered_docs, key=self._score_url(base_url, is_doc=True), reverse=True)[:limit]
+        # Final sort and limit
+        page_scorer = self._score_url(base_url)
+        sorted_pages = sorted(list(discovered_pages), key=page_scorer, reverse=True)[:limit]
+        sorted_docs = sorted(list(discovered_docs), key=lambda x: page_scorer(x) + 10, reverse=True)[:limit]
         return sorted_pages, sorted_docs
 
     def _score_url(self, base_url: str, is_doc: bool = False):
@@ -199,17 +223,29 @@ class Scraper:
             "admission": 20, "docs": 20, "brochure": 25, "manual": 25,
             "policy": 20, "faq": 15, "handbook": 25, "guide": 25,
             "attraction": 20, "api": 20, "product": 15, "service": 15,
+            "pricing": 20, "features": 15, "documentation": 20,
         }
 
         def scorer(url: str) -> int:
             s = 10 if is_doc else 0
             url_lower = url.lower()
+            
+            # High priority for home page
+            if url == base_url or url == base_url + "/":
+                return 1000
+                
+            # Bonus for keywords in path
             for kw, val in priority_map.items():
                 if kw in url_lower:
                     s += val
-            if url == base_url:
-                s += 100
-            s -= url_lower.count("/") * 2
+            
+            # Bonus for shallow depth
+            s -= url_lower.count("/") * 5
+            
+            # Penalize noise keywords that weren't caught by filter
+            if any(k in url_lower for k in ["login", "signup", "register", "cart"]):
+                s -= 50
+                
             return s
 
         return scorer

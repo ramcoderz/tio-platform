@@ -1,92 +1,46 @@
-import asyncio
 import sqlite3
-from backend.config.settings import get_settings
+import os
+import logging
 
-settings = get_settings()
-db_path = settings.sqlite_url.replace("sqlite+aiosqlite:///", "")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("migration")
 
-def migrate():
-    print(f"Applying migrations to {db_path}...")
+def migrate_db():
+    db_path = "tio.db"
+    if not os.path.exists(db_path):
+        logger.info("No tio.db found, skipping migration.")
+        return
+
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
-    # 1. Add missing columns to uploaded_documents
-    columns_to_add = [
-        ("summary", "TEXT"),
-        ("intel_report", "TEXT"),
-        ("created_at", "DATETIME")
-    ]
-    
-    for col_name, col_type in columns_to_add:
-        try:
-            cursor.execute(f"ALTER TABLE uploaded_documents ADD COLUMN {col_name} {col_type}")
-            print(f"Added column {col_name} to uploaded_documents")
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" in str(e):
-                print(f"Column {col_name} already exists")
-                print(f"Error adding {col_name}: {e}")
 
-    # 2. Add missing columns to messages
-    messages_cols = [
-        ("parent_id", "INTEGER"),
-        ("created_at", "DATETIME")
-    ]
-    for col_name, col_type in messages_cols:
-        try:
-            cursor.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type}")
-            print(f"Added column {col_name} to messages")
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" in str(e):
-                print(f"Column {col_name} already exists in messages")
-            else:
-                print(f"Error adding {col_name} to messages: {e}")
-
-    # 3. Add missing columns to users
-    users_cols = [
-        ("username", "VARCHAR(64)")
-    ]
-    for col_name, col_type in users_cols:
-        try:
-            cursor.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
-            print(f"Added column {col_name} to users")
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" in str(e):
-                print(f"Column {col_name} already exists in users")
-            else:
-                print(f"Error adding {col_name} to users: {e}")
-                
-    # 4. Ensure relationships table exists
     try:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS relationships (
-                id INTEGER PRIMARY KEY,
-                source_id INTEGER REFERENCES uploaded_documents(id),
-                target_id INTEGER REFERENCES uploaded_documents(id),
-                type VARCHAR(64),
-                description TEXT,
-                weight FLOAT
-            )
-        """)
-        print("Ensured relationships table exists")
-    except Exception as e:
-        print(f"Error creating relationships table: {e}")
+        # Check if chatbots.user_id exists
+        cursor.execute("PRAGMA table_info(chatbots)")
+        columns = [col[1] for col in cursor.fetchall()]
+        
+        if "user_id" not in columns:
+            logger.info("Adding user_id column to chatbots table...")
+            cursor.execute("ALTER TABLE chatbots ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+        else:
+            logger.info("Column chatbots.user_id already exists.")
 
-    # 5. Create system_configs table
-    try:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS system_configs (
-                id INTEGER PRIMARY KEY,
-                key VARCHAR(64) UNIQUE,
-                value TEXT
-            )
-        """)
-        # Insert default auto_delete_hours if not exists
-        cursor.execute("INSERT OR IGNORE INTO system_configs (key, value) VALUES ('auto_delete_hours', '4')")
-        print("Ensured system_configs table exists with defaults")
+        # Check if conversations.user_id exists
+        cursor.execute("PRAGMA table_info(conversations)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if "user_id" not in columns:
+            logger.info("Adding user_id column to conversations table...")
+            cursor.execute("ALTER TABLE conversations ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
+        else:
+            logger.info("Column conversations.user_id already exists.")
+
+        conn.commit()
+        logger.info("Migration completed successfully.")
     except Exception as e:
-        print(f"Error creating system_configs table: {e}")
-    conn.close()
-    print("Migration complete.")
+        logger.error(f"Migration failed: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 if __name__ == "__main__":
-    migrate()
+    migrate_db()

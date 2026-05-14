@@ -1,10 +1,12 @@
 """
 Ingestion service — file parsing, section-aware chunking, and website ingestion.
 
-Chunk strategy:
-  - Target: 400–700 tokens (~1600–2800 chars at ~4 chars/token)
-  - Overlap: 80 tokens (~320 chars)
-  - Section-aware: splits preferentially at paragraph/heading boundaries
+Improvements (Priority 4):
+  - Deduplication by content hash
+  - Boilerplate / navigation filtering
+  - Content quality scoring (skip low-value chunks)
+  - Site intelligence profile built after ingestion
+  - Better domain detection with confidence threshold
 """
 
 import asyncio
@@ -26,6 +28,7 @@ from backend.config.settings import get_settings
 from backend.models.entities import Chatbot, EmbeddingMetadata, UploadedDocument
 from backend.vectorstore.service import upsert_chunks
 from backend.ingestion.scraper import scraper
+from backend.utils.entities import extract_entities as robust_extract_entities
 
 settings = get_settings()
 
@@ -34,13 +37,82 @@ _CHUNK_TARGET = 2200   # ~550 tokens
 _CHUNK_MAX    = 2800   # ~700 tokens
 _CHUNK_OVERLAP = 320   # ~80 tokens
 
+# Quality thresholds
+_MIN_CHUNK_CHARS = 80       # skip very short fragments
+_MIN_WORD_COUNT  = 15       # skip chunks with fewer words (likely nav/boilerplate)
+_MAX_LINK_DENSITY = 0.4     # skip chunks where >40% of words look like URLs/nav
+
+
+# ---------------------------------------------------------------------------
+# Boilerplate detection
+# ---------------------------------------------------------------------------
+
+_BOILERPLATE_PATTERNS = [
+    r'^(home|about|contact|login|sign up|register|menu|navigation|footer|header|sitemap|privacy policy|terms of service|cookie policy|all rights reserved)$',
+    r'^(click here|read more|learn more|view all|see all|show more|load more|back to top)$',
+    r'^(\d{4}\s*[©|&copy;])',     # copyright lines
+    r'^(follow us|share this|subscribe|newsletter)',
+    r'^\s*[\|\-\•\*]\s*$',       # separator-only lines
+    r'^(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s*:?\s*\d',  # hours lines
+]
+_BOILERPLATE_RE = [re.compile(p, re.IGNORECASE) for p in _BOILERPLATE_PATTERNS]
+
+
+def _is_boilerplate(text: str) -> bool:
+    t = text.strip().lower()
+    if len(t) < 5:
+        return True
+    for pat in _BOILERPLATE_RE:
+        if pat.search(t):
+            return True
+    return False
+
+
+def _link_density(text: str) -> float:
+    """Ratio of URL-like tokens to total words — high = navigation/boilerplate."""
+    words = text.split()
+    if not words:
+        return 0.0
+    url_words = sum(1 for w in words if w.startswith(("http", "www.", "/")) or w.endswith((".html", ".php", ".asp")))
+    return url_words / len(words)
+
+
+def _content_score(text: str) -> float:
+    """
+    Simple quality score 0–1 for a text chunk:
+      - Penalise short chunks
+      - Penalise high link density
+      - Penalise all-caps content (navigation menus)
+      - Reward longer, sentence-like text
+    """
+    if not text:
+        return 0.0
+    words = text.split()
+    wc = len(words)
+
+    if wc < _MIN_WORD_COUNT:
+        return 0.1
+
+    ld = _link_density(text)
+    if ld > _MAX_LINK_DENSITY:
+        return 0.1
+
+    # Penalise if most words are capitalised (like menu items)
+    caps_ratio = sum(1 for w in words if w.isupper() and len(w) > 1) / max(wc, 1)
+    if caps_ratio > 0.5:
+        return 0.2
+
+    # Reward sentence structure
+    sentence_count = len(re.findall(r'[.!?]', text))
+    score = min(1.0, 0.3 + (sentence_count * 0.1) + (wc / 200) * 0.4)
+    return round(score, 2)
+
 
 # ---------------------------------------------------------------------------
 # File Parsing
 # ---------------------------------------------------------------------------
 
 def _parse_file(path: Path) -> str:
-    """Extract raw text from a supported file type."""
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         return "\n".join(
@@ -58,53 +130,59 @@ def _parse_file(path: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def _split_into_sections(text: str) -> list[str]:
-    """
-    Split text at natural boundaries: blank lines, markdown headings,
-    or HTML block tags. Falls back to raw text if no boundaries found.
-    """
-    # Normalise line endings
     text = text.replace("\r\n", "\n").replace("\r", "\n")
-
-    # Try splitting on double newlines (paragraphs) first
     paragraphs = re.split(r"\n\s*\n", text)
     if len(paragraphs) > 1:
         return [p.strip() for p in paragraphs if p.strip()]
-
-    # Fall back to single newlines
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     return lines
 
 
 def _extract_entities(text: str) -> list[str]:
-    """
-    Simple entity extractor for metadata boosting.
-    Looks for sequences of Title Case words (Proper Nouns).
-    """
-    # Pattern for 2+ Title Case words (e.g. Louvre Museum) or specific acronyms (e.g. UNESCO)
-    patterns = [
-        r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b',
-        r'\b[A-Z]{2,}\b',
-    ]
-    found = []
-    for p in patterns:
-        found.extend(re.findall(p, text))
-    return list(set(found))
+    """Link to centralized entity extraction."""
+    return robust_extract_entities(text)
 
 
-def _chunk_text(text: str, source: str, chatbot_id: int, domain: str = "general") -> list[dict]:
-    """
-    Section-aware chunking with entity extraction and domain tagging.
-    """
+def _chunk_text(
+    text: str,
+    source: str,
+    chatbot_id: int,
+    domain: str = "general",
+    source_type: str = "text/html",
+) -> list[dict]:
+    """Section-aware chunking with quality filtering and entity extraction."""
     sections = _split_into_sections(text)
     chunks: list[dict] = []
+    seen_hashes: set[str] = set()
     buffer = ""
 
     def _flush(buf: str) -> None:
         buf = buf.strip()
-        if len(buf) < 50:  # skip very short fragments
+        if len(buf) < _MIN_CHUNK_CHARS:
             return
-        
+
+        # Boilerplate filter
+        if _is_boilerplate(buf):
+            return
+
+        # Content quality filter
+        if _content_score(buf) < 0.15:
+            return
+
+        # Deduplication by content hash
+        h = hashlib.md5(buf.encode()).hexdigest()
+        if h in seen_hashes:
+            return
+        seen_hashes.add(h)
+
         entities = _extract_entities(buf)
+        # Priority: homepage (3) > high-quality docs (2) > others (1)
+        priority = 1
+        if source == "/" or source.endswith(("index.html", "index.php")) or len(source.split("/")) < 4:
+            priority = 3
+        elif _content_score(buf) > 0.6:
+            priority = 2
+
         chunks.append({
             "chunk_id": str(uuid4()),
             "text": buf,
@@ -114,7 +192,10 @@ def _chunk_text(text: str, source: str, chatbot_id: int, domain: str = "general"
                 "chatbot_id": chatbot_id,
                 "domain": domain,
                 "source": source,
+                "source_type": source_type,
                 "entities": entities,
+                "quality_score": _content_score(buf),
+                "priority": priority,
             },
         })
 
@@ -122,24 +203,24 @@ def _chunk_text(text: str, source: str, chatbot_id: int, domain: str = "general"
         if not section:
             continue
 
-        # If adding this section would exceed the hard max, flush first
+        # Skip individual boilerplate sections before buffering
+        if _is_boilerplate(section):
+            continue
+
         if buffer and len(buffer) + len(section) + 1 > _CHUNK_MAX:
             _flush(buffer)
-            # Carry overlap from end of flushed buffer
             buffer = buffer[-_CHUNK_OVERLAP:].lstrip() if len(buffer) > _CHUNK_OVERLAP else ""
 
         buffer = (buffer + "\n\n" + section).strip() if buffer else section
 
-        # Flush when we've hit the target size
         if len(buffer) >= _CHUNK_TARGET:
             _flush(buffer)
             buffer = buffer[-_CHUNK_OVERLAP:].lstrip() if len(buffer) > _CHUNK_OVERLAP else ""
 
-    # Flush any remaining content
     if buffer:
         _flush(buffer)
 
-    logger.info(f"[CHUNKING] {source!r} → {len(chunks)} chunks (total chars: {len(text)})")
+    logger.info(f"[CHUNKING] {source!r} → {len(chunks)} quality chunks from {len(sections)} sections")
     return chunks
 
 
@@ -151,7 +232,7 @@ async def ingest_file(chatbot_id: int, file: UploadFile, db: AsyncSession) -> di
     content = await file.read()
     file_hash = hashlib.sha256(content).hexdigest()
 
-    # Dedup check
+    # Dedup check by file hash
     existing = await db.execute(
         select(UploadedDocument).where(
             UploadedDocument.chatbot_id == chatbot_id,
@@ -159,7 +240,7 @@ async def ingest_file(chatbot_id: int, file: UploadFile, db: AsyncSession) -> di
         )
     )
     if existing.scalar_one_or_none():
-        return {"status": "exists", "message": "File already exists for this chatbot."}
+        return {"status": "exists", "message": "File already indexed for this chatbot."}
 
     path = Path(settings.upload_dir) / f"{uuid4()}_{file.filename}"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,7 +252,7 @@ async def ingest_file(chatbot_id: int, file: UploadFile, db: AsyncSession) -> di
         domain = chatbot.domain if chatbot else "general"
         chunks = _chunk_text(text, file.filename, chatbot_id, domain=domain)
         if not chunks:
-            raise ValueError("No readable text found in file.")
+            raise ValueError("No readable text found in file (or all content filtered as boilerplate).")
 
         await asyncio.to_thread(upsert_chunks, chunks)
 
@@ -203,7 +284,7 @@ async def ingest_file(chatbot_id: int, file: UploadFile, db: AsyncSession) -> di
 
 
 # ---------------------------------------------------------------------------
-# Secure Document Download (for linked PDFs/DOCX from websites)
+# Secure Document Download
 # ---------------------------------------------------------------------------
 
 async def download_document(url: str) -> Path | None:
@@ -211,7 +292,7 @@ async def download_document(url: str) -> Path | None:
     import tempfile
     from urllib.parse import urlparse as _urlparse
 
-    MAX_SIZE = 25 * 1024 * 1024  # 25 MB
+    MAX_SIZE = 25 * 1024 * 1024
     ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
 
     try:
@@ -219,7 +300,7 @@ async def download_document(url: str) -> Path | None:
             head = await client.head(url)
             size = int(head.headers.get("content-length", 0))
             if size > MAX_SIZE:
-                logger.warning(f"[DOWNLOAD] File too large ({size} bytes): {url}")
+                logger.warning(f"[DOWNLOAD] Too large ({size} bytes): {url}")
                 return None
 
             ext = Path(_urlparse(url).path).suffix.lower()
@@ -247,8 +328,8 @@ async def download_document(url: str) -> Path | None:
 
 async def ingest_website(chatbot_id: int, url: str) -> None:
     """
-    Background task: crawl website, parse pages and linked docs,
-    chunk and index everything, then run domain detection.
+    Background task: crawl, parse, quality-filter, chunk, index,
+    then build a site intelligence profile.
     """
     from backend.db.session import SessionLocal
 
@@ -260,28 +341,39 @@ async def ingest_website(chatbot_id: int, url: str) -> None:
 
             chatbot.status = "ingesting"
             await db.commit()
-            logger.info(f"[INGESTION] Starting website ingestion for chatbot={chatbot_id}, url={url}")
+            logger.info(f"[INGESTION] Starting for chatbot={chatbot_id}, url={url}")
 
-            # --- Early Domain Detection ---
+            # --- Early Domain Detection (from homepage) ---
             from backend.utils.domain_intelligence import domain_detector
             homepage_content = await scraper.extract_content(url)
-            detected_domain = domain_detector.detect(homepage_content, {"url": url})
+
+            domain_scores = domain_detector.get_scores(homepage_content, {"url": url})
+            sorted_scores = sorted(domain_scores, key=lambda x: x.score, reverse=True)
+            top_score = sorted_scores[0] if sorted_scores else None
+
+            # Only accept domain if score is meaningful
+            if top_score and top_score.score > 2.0:
+                detected_domain = top_score.domain
+            else:
+                detected_domain = "general"
+
             chatbot.domain = detected_domain
             chatbot.behavior_profile = detected_domain
             await db.commit()
-            logger.info(f"[INGESTION] Detected domain: {detected_domain}")
+            logger.info(f"[INGESTION] Domain detected: {detected_domain} (score={top_score.score if top_score else 0:.1f})")
 
-            # Determine crawl depth based on site type
-            is_deep = any(k in url.lower() for k in [
-                ".edu", "university", "college", "tourism", "hospital", "clinic"
-            ])
-            depth = 2 if is_deep else 1
-            pages, docs = await scraper.discover_assets(url, limit=settings.top_k * 4, depth=depth)
+            # --- Crawl ---
+            logger.info(f"[INGESTION] [STAGE: Crawling] Starting discovery for {url}")
+            depth = 2
+            pages, docs = await scraper.discover_assets(
+                url, limit=settings.top_k * 4, depth=depth, allow_external=True
+            )
             logger.info(f"[INGESTION] Discovered {len(pages)} pages, {len(docs)} docs")
 
-            all_text = ""
+            all_text = homepage_content + "\n\n"
 
             # --- HTML pages ---
+            logger.info(f"[INGESTION] [STAGE: Extraction & Indexing HTML] Processing {len(pages)} pages")
             for page_url in pages:
                 existing = (await db.execute(
                     select(UploadedDocument).where(
@@ -293,11 +385,11 @@ async def ingest_website(chatbot_id: int, url: str) -> None:
                     continue
 
                 content = await scraper.extract_content(page_url)
-                if not content:
+                if not content or len(content.split()) < 20:
                     continue
 
                 all_text += content + "\n\n"
-                chunks = _chunk_text(content, page_url, chatbot_id, domain=detected_domain)
+                chunks = _chunk_text(content, page_url, chatbot_id, domain=detected_domain, source_type="text/html")
                 if not chunks:
                     continue
 
@@ -320,6 +412,7 @@ async def ingest_website(chatbot_id: int, url: str) -> None:
                     ))
 
             # --- Linked documents ---
+            logger.info(f"[INGESTION] [STAGE: Extraction & Indexing Docs] Processing {len(docs)} linked documents")
             for doc_url in docs:
                 existing = (await db.execute(
                     select(UploadedDocument).where(
@@ -336,30 +429,28 @@ async def ingest_website(chatbot_id: int, url: str) -> None:
 
                 try:
                     content = await asyncio.to_thread(_parse_file, temp_path)
-                    if not content:
+                    if not content or len(content.split()) < 20:
                         continue
 
                     all_text += content + "\n\n"
-                    chunks = _chunk_text(content, doc_url, chatbot_id, domain=detected_domain)
+                    stype = "application/pdf" if doc_url.endswith(".pdf") else "application/vnd.openxmlformats"
+                    chunks = _chunk_text(content, doc_url, chatbot_id, domain=detected_domain, source_type=stype)
                     if not chunks:
                         continue
 
                     await asyncio.to_thread(upsert_chunks, chunks)
 
-                    doc = UploadedDocument(
+                    doc_obj = UploadedDocument(
                         chatbot_id=chatbot_id,
                         filename=Path(doc_url).name or "document",
                         source_path=doc_url,
-                        content_type=(
-                            "application/pdf" if doc_url.endswith(".pdf")
-                            else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                        ),
+                        content_type=stype,
                     )
-                    db.add(doc)
+                    db.add(doc_obj)
                     await db.flush()
                     for c in chunks:
                         db.add(EmbeddingMetadata(
-                            document_id=doc.id,
+                            document_id=doc_obj.id,
                             chunk_id=c["chunk_id"],
                             text=c["text"],
                             metadata_json=c["metadata"],
@@ -368,17 +459,31 @@ async def ingest_website(chatbot_id: int, url: str) -> None:
                     if temp_path.exists():
                         temp_path.unlink()
 
+            # --- Build Site Intelligence Profile ---
+            logger.info(f"[INGESTION] [STAGE: Site Profile] Building contextual intelligence profile")
+            from backend.utils.site_intelligence import build_site_profile
+            site_profile = await build_site_profile(
+                all_text=all_text,
+                domain=detected_domain,
+                site_url=url,
+            )
+            chatbot.site_profile = site_profile
+
+            logger.info(f"[INGESTION] [STAGE: DB Commit] Finalizing database transaction")
             chatbot.status = "ready"
+            chatbot.error_message = None
             await db.commit()
 
             logger.info(
-                f"[INGESTION] Complete — chatbot={chatbot_id}, domain={detected_domain}, "
-                f"pages={len(pages)}, docs={len(docs)}"
+                f"[INGESTION] Complete — chatbot={chatbot_id} domain={detected_domain} "
+                f"pages={len(pages)} docs={len(docs)} "
+                f"entities={len(site_profile.get('top_entities', []))}"
             )
 
         except Exception as e:
-            logger.error(f"[INGESTION] Failed for chatbot={chatbot_id}: {e}", exc_info=True)
+            logger.error(f"[INGESTION] Failed at stage for chatbot={chatbot_id}: {e}", exc_info=True)
             chatbot = await db.get(Chatbot, chatbot_id)
             if chatbot:
                 chatbot.status = "error"
+                chatbot.error_message = f"{type(e).__name__}: {str(e)}"
                 await db.commit()

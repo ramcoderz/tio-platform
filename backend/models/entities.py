@@ -7,12 +7,16 @@ from backend.models.base import Base
 class Chatbot(Base):
     __tablename__ = "chatbots"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
     website_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     domain: Mapped[str | None] = mapped_column(String(100), nullable=True)
     behavior_profile: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="pending")  # pending, ingesting, ready, error
     config: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Website understanding layer — generated during ingestion
+    site_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
@@ -82,6 +86,7 @@ class SessionMemory(Base):
     __tablename__ = "session_memory"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     session_id: Mapped[str] = mapped_column(String(128), index=True)
+    chatbot_id: Mapped[int] = mapped_column(ForeignKey("chatbots.id", ondelete="CASCADE"), index=True)
     key: Mapped[str] = mapped_column(String(64))
     value: Mapped[str] = mapped_column(Text)
 
@@ -101,3 +106,24 @@ class SystemConfig(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     value: Mapped[str] = mapped_column(Text)
+
+
+class ConversationGoal(Base):
+    __tablename__ = "conversation_goals"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(128), index=True)
+    chatbot_id: Mapped[int] = mapped_column(ForeignKey("chatbots.id", ondelete="CASCADE"), index=True)
+    
+    current_goal: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    active_workflow: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    workflow_stage: Mapped[str] = mapped_column(String(50), default="browsing")
+    conversation_mode: Mapped[str] = mapped_column(String(50), default="exploratory")
+    
+    # Store discovered entities, related pages, and completed steps as JSON
+    state_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    from sqlalchemy import UniqueConstraint
+    __table_args__ = (UniqueConstraint("session_id", "chatbot_id", name="uq_session_goal"),)
+

@@ -1,6 +1,7 @@
 /* ============================================
    TiO Design System — Premium Edition
    ============================================ */
+@import "tailwindcss";
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -15,6 +16,12 @@
   
   --accent: #00C6FF;
   --accent-alt: #0072FF;
+  --accent-violet: #7C3AED;
+  --accent-blue: #3B82F6;
+  --accent-red: #EF4444;
+  --accent-red-dim: rgba(239, 68, 68, 0.1);
+  --accent-cyan: #00C6FF;
+  
   --accent-glow: rgba(0, 198, 255, 0.5);
   --accent-gradient: linear-gradient(135deg, #00C6FF 0%, #0072FF 100%);
   --accent-gradient-vibrant: linear-gradient(135deg, #00F2FE 0%, #4FACFE 100%);
@@ -69,6 +76,10 @@
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
   --shadow-md: 0 4px 14px rgba(0,0,0,0.1);
   --shadow-lg: 0 15px 40px rgba(0,0,0,0.12);
+}
+
+[data-theme='light'] .btn-primary {
+  color: #ffffff;
 }
 
 /* --- Base --- */
@@ -146,6 +157,7 @@ h1, h2, h3, h4, .font-heading { font-family: var(--font-heading); font-weight: 7
   font-family: var(--font-heading); font-weight: 600; font-size: 14px;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   cursor: pointer;
+  white-space: nowrap;
 }
 .btn-primary {
   background: var(--accent-gradient);
@@ -174,6 +186,22 @@ h1, h2, h3, h4, .font-heading { font-family: var(--font-heading); font-weight: 7
   background: var(--premium-gradient);
   color: #fff;
   box-shadow: 0 4px 14px 0 rgba(124, 58, 237, 0.3);
+}
+
+.btn-glow {
+  background: var(--accent-gradient);
+  color: #03050c;
+  border: none;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  box-shadow: 0 0 20px var(--accent-glow);
+  transition: all 0.3s ease;
+}
+.btn-glow:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 0 30px var(--accent);
+  filter: brightness(1.1);
 }
 
 .input, .form-input {

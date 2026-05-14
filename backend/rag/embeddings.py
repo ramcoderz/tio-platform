@@ -16,12 +16,11 @@ def model() -> SentenceTransformer:
     os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
     os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
     try:
-        return SentenceTransformer(settings.embedding_model)
+        # BGE-small is highly efficient and optimized for retrieval tasks
+        return SentenceTransformer('BAAI/bge-small-en-v1.5')
     except Exception as exc:
-        raise RuntimeError(
-            "Embedding model is unavailable. Check internet access or pre-download "
-            f"'{settings.embedding_model}' from Hugging Face."
-        ) from exc
+        logger.warning(f"[EMBEDDINGS] BGE failed, falling back to MiniLM: {exc}")
+        return SentenceTransformer('all-MiniLM-L6-v2')
 
 
 @lru_cache(maxsize=1)

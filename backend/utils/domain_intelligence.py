@@ -15,27 +15,32 @@ DOMAIN_INDICATORS = {
     "education": [
         "admissions", "faculty", "courses", "departments", "semester", "placements",
         "university", "college", "campus", "scholarship", "curriculum", "syllabus",
-        "student", "academic", "degree", "graduate", "undergraduate"
+        "student", "academic", "degree", "graduate", "undergraduate", "alumni",
+        "registrar", "dean", "provost", "tuition", "transcript"
     ],
     "medical": [
         "appointments", "doctors", "insurance", "departments", "patient care",
         "hospital", "clinic", "symptom", "treatment", "diagnosis", "specialist",
-        "consultation", "healthcare", "medical", "pharmacy", "wellness"
+        "consultation", "healthcare", "medical", "pharmacy", "wellness", "radiology",
+        "cardiology", "oncology", "pediatrics", "surgery", "nurse"
     ],
     "tourism": [
         "attractions", "itinerary", "destinations", "rides", "events", "hotels",
         "travel", "tour", "sightseeing", "vacation", "booking", "resort",
-        "guide", "heritage", "adventure", "explore"
+        "guide", "heritage", "adventure", "explore", "museum", "gallery",
+        "landmark", "monument", "excursion"
     ],
     "developer": [
         "api", "sdk", "integrations", "authentication", "webhooks", "documentation",
         "endpoint", "library", "developer", "backend", "frontend", "git",
-        "deployment", "hosting", "cloud", "software", "saas"
+        "deployment", "hosting", "cloud", "software", "saas", "bearer", "oauth",
+        "json", "rest", "graphql", "npm", "pip", "webhook", "sandbox", "callback"
     ],
     "ecommerce": [
         "products", "pricing", "catalog", "orders", "shipping", "cart",
         "checkout", "payment", "inventory", "sales", "discount", "offer",
-        "customer", "retail", "store", "purchase", "refund"
+        "customer", "retail", "store", "purchase", "refund", "sku", "wishlist",
+        "coupons", "marketplace"
     ],
 }
 
@@ -71,6 +76,7 @@ class DomainDetector:
         """
         Detects the domain of a given text/content.
         Returns the domain string or 'general'.
+        Uses a strict confidence threshold.
         """
         if not text:
             return "general"
@@ -81,10 +87,18 @@ class DomainDetector:
 
         # Sort by score descending
         sorted_scores = sorted(scores, key=lambda x: x.score, reverse=True)
+        top = sorted_scores[0]
         
-        # If the top score is high enough, return it
-        if sorted_scores[0].score > 0:
-            return sorted_scores[0].domain
+        # Confidence Threshold: 
+        # 1. Top score must be > 3.0 (strong indicator match)
+        # 2. OR Semantic match must be very strong (> 0.6 boost equivalent)
+        # 3. OR Gap between top and second must be significant
+        second_score = sorted_scores[1].score if len(sorted_scores) > 1 else 0.0
+        
+        is_confident = (top.score >= 3.0) or (top.score > 1.5 and (top.score - second_score) > 1.0)
+        
+        if is_confident:
+            return top.domain
 
         return "general"
 

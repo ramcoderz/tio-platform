@@ -24,7 +24,11 @@ class Settings(BaseSettings):
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     gemini_model: str = "gemini-1.5-flash"
     gemini_api_key: str = ""
+    tavily_api_key: str | None = None
     confidence_threshold: float = 0.65
+    # Web search augmentation (Task 19)
+    web_search_enabled: bool = True                  # set to False to disable
+    web_search_min_confidence: float = 0.25          # trigger web search below this
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])
 
     # Security

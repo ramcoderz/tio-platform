@@ -19,20 +19,11 @@ Path(settings.chroma_dir).mkdir(parents=True, exist_ok=True)
 # State
 _faiss = faiss.IndexFlatIP(384)
 _rows: list[dict] = []
-_bm25: BM25Okapi | None = None
 _chroma = chromadb.PersistentClient(path=settings.chroma_dir).get_or_create_collection("tio_chunks")
 _lock = Lock()
 
 def _tokenize(text: str) -> list[str]:
     return text.lower().split()
-
-def _rebuild_bm25():
-    global _bm25
-    if not _rows:
-        _bm25 = None
-        return
-    tokenized_corpus = [_tokenize(r["text"]) for r in _rows]
-    _bm25 = BM25Okapi(tokenized_corpus)
 
 def _reload_from_chroma() -> None:
     global _faiss, _rows
@@ -61,7 +52,6 @@ def _reload_from_chroma() -> None:
                     "metadata": meta or {},
                     "embedding": vec,
                 })
-            _rebuild_bm25()
     except Exception as e:
         logger.error(f"Error reloading chroma: {e}")
 
@@ -70,31 +60,61 @@ def initialize_vectorstore():
 
 def upsert_chunks(chunks: list[dict]) -> None:
     if not chunks: return
-    vectors = embed([c["text"] for c in chunks])
-    with _lock:
-        _faiss.add(np.asarray(vectors, dtype="float32"))
-        for chunk, vector in zip(chunks, vectors):
-            row = dict(chunk)
-            row["embedding"] = vector.tolist() if hasattr(vector, "tolist") else list(vector)
-            _rows.append(row)
-            
-        _rebuild_bm25()
+    
+    # Validation
+    valid_chunks = []
+    for c in chunks:
+        if not c.get("chunk_id"):
+            logger.error("[VECTORSTORE] Chunk missing ID, skipping.")
+            continue
+        text = c.get("text", "")
+        if not isinstance(text, str) or len(text.strip()) == 0:
+            logger.error(f"[VECTORSTORE] Chunk {c.get('chunk_id')} has empty text, skipping.")
+            continue
+        valid_chunks.append(c)
 
-        safe_metadatas = []
-        for c in chunks:
-            meta = {
-                k: (str(val) if val is not None and not isinstance(val, (str, int, float, bool)) else ("" if val is None else val))
-                for k, val in c.get("metadata", {}).items()
-            }
-            meta["document"] = c.get("document", "")
-            safe_metadatas.append(meta)
-            
-        _chroma.add(
-            ids=[c["chunk_id"] for c in chunks],
-            embeddings=[v.tolist() if hasattr(v, "tolist") else list(v) for v in vectors],
-            documents=[c["text"] for c in chunks],
-            metadatas=safe_metadatas,
-        )
+    if not valid_chunks:
+        logger.error("[VECTORSTORE] No valid chunks remaining after validation.")
+        return
+
+    vectors = embed([c["text"] for c in valid_chunks])
+    if len(vectors) != len(valid_chunks):
+        logger.error(f"[VECTORSTORE] Embedding count ({len(vectors)}) != Chunk count ({len(valid_chunks)})")
+        raise ValueError("Embedding generation mismatch")
+
+    with _lock:
+        try:
+            _faiss.add(np.asarray(vectors, dtype="float32"))
+            for chunk, vector in zip(valid_chunks, vectors):
+                row = dict(chunk)
+                row["embedding"] = vector.tolist() if hasattr(vector, "tolist") else list(vector)
+                _rows.append(row)
+
+            safe_metadatas = []
+            for c in valid_chunks:
+                meta = {}
+                for k, val in c.get("metadata", {}).items():
+                    if val is None:
+                        meta[k] = ""
+                    elif isinstance(val, (str, int, float, bool)):
+                        meta[k] = val
+                    elif isinstance(val, list):
+                        meta[k] = ", ".join(str(v) for v in val)
+                    else:
+                        meta[k] = str(val)
+                meta["document"] = str(c.get("document", ""))
+                safe_metadatas.append(meta)
+                
+            _chroma.upsert(
+                ids=[c["chunk_id"] for c in valid_chunks],
+                embeddings=[v.tolist() if hasattr(v, "tolist") else list(v) for v in vectors],
+                documents=[c["text"] for c in valid_chunks],
+                metadatas=safe_metadatas,
+            )
+            logger.info(f"[VECTORSTORE] Upserted {len(valid_chunks)} chunks to FAISS & ChromaDB.")
+        except Exception as e:
+            logger.error(f"[VECTORSTORE] Insertion failed: {e}", exc_info=True)
+            raise
 
 def _compute_rrf(faiss_ranks: list[int], bm25_ranks: list[int], k: int = 60) -> float:
     score = 0.0
@@ -149,10 +169,18 @@ def retrieve(query: str, top_k: int | None = None, chatbot_id: int | None = None
         fused = sorted(fused, key=lambda x: x[0], reverse=True)[:limit]
         return [RetrievedChunk(r["chunk_id"], r["text"], float(s), r["document"], r["metadata"]) for s, r in fused]
 
-async def async_retrieve(query: str, top_k: int | None = None, chatbot_id: int | None = None, domain: str | None = None) -> list[RetrievedChunk]:
+async def async_retrieve(
+    query: str, 
+    top_k: int | None = None, 
+    chatbot_id: int | None = None, 
+    domain: str | None = None,
+    workflow: str | None = None
+) -> list[RetrievedChunk]:
     limit = top_k or settings.top_k
     q_vec = np.asarray(embed([query])[0], dtype="float32")
     q_tokens = _tokenize(query)
+    workflow_tokens = _tokenize(workflow) if workflow else []
+
     
     with _lock:
         if not _rows:
@@ -189,7 +217,7 @@ async def async_retrieve(query: str, top_k: int | None = None, chatbot_id: int |
         s_rank = next((i for i, (_, r) in enumerate(sparse_res) if r["chunk_id"] == cid), None)
         
         score = _compute_rrf([d_rank + 1] if d_rank is not None else [], [s_rank + 1] if s_rank is not None else [])
-        
+
         # Entity Boosting: If query contains entities found in this chunk
         meta = row.get("metadata", {})
         if isinstance(meta, dict):
@@ -197,8 +225,21 @@ async def async_retrieve(query: str, top_k: int | None = None, chatbot_id: int |
             if isinstance(entities, list):
                 for ent in entities:
                     if str(ent).lower() in q_norm:
-                        score += 0.02  # Boost for entity match
-        
+                        score += 0.15  # Stronger boost for entity match (Task: Entity Grounding)
+
+        # Priority Boosting: Homepage/High-quality pages get a boost
+        priority = meta.get("priority", 1)
+        if priority > 1:
+            score += (priority - 1) * 0.05
+
+        # Workflow Boosting: Boost if chunk text contains workflow keywords
+        if workflow_tokens:
+            chunk_lower = row["text"].lower()
+            for wt in workflow_tokens:
+                if len(wt) > 3 and wt in chunk_lower:
+                    score += 0.1  # Significant boost for workflow relevance
+
+
         if score > 0: fused.append((score, row))
             
     fused = sorted(fused, key=lambda x: x[0], reverse=True)[:20]
@@ -229,7 +270,6 @@ def delete_chatbot_vectors(chatbot_id: int) -> None:
         _faiss = faiss.IndexFlatIP(384)
         if _rows:
             _faiss.add(np.asarray([r["embedding"] for r in _rows], dtype="float32"))
-        _rebuild_bm25()
 
 def delete_chunk_vectors(chunk_ids: list[str]) -> None:
     global _rows, _faiss
@@ -241,14 +281,12 @@ def delete_chunk_vectors(chunk_ids: list[str]) -> None:
         _faiss = faiss.IndexFlatIP(384)
         if _rows:
             _faiss.add(np.asarray([r["embedding"] for r in _rows], dtype="float32"))
-        _rebuild_bm25()
 
 def purge_all() -> None:
-    global _rows, _faiss, _bm25
+    global _rows, _faiss
     with _lock:
         _rows = []
         _faiss = faiss.IndexFlatIP(384)
-        _bm25 = None
         try:
             _chroma.delete(where={})
         except: pass
@@ -258,6 +296,5 @@ def get_stats() -> dict:
         return {
             "total_chunks": len(_rows),
             "vector_count": _faiss.ntotal,
-            "document_count": len(set(r.get("document", "") for r in _rows if r.get("document"))),
-            "bm25_active": _bm25 is not None
+            "document_count": len(set(r.get("document", "") for r in _rows if r.get("document")))
         }
