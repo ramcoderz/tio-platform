@@ -1,4 +1,4 @@
-"""
+﻿"""
 Orchestrator — the intelligence core of TiO.
 
 Contextual Prompt Orchestration Pipeline (v2):
@@ -18,8 +18,8 @@ Pipeline per request:
   10. Workflow-aware re-retrieval (if needed)
   11. Tavily external research (if confidence < threshold)
   12. Prompt orchestration (layered, deterministic — no extra LLM call)
-  13. LLM generation (Ollama / OpenRouter fallback)
-  14. Response sanitization
+    13. LLM generation (Ollama local inference)
+    14. Response sanitization
   15. Monitoring + tracking
 """
 
@@ -48,10 +48,22 @@ from backend.memory.service import update_rolling_summary
 from backend.orchestration.prompt_orchestrator import (
     OrchestrationInput, build_prompt,
 )
+from backend.synthesis.context_aggregator import ContextAggregator
+from backend.synthesis.workflow_engine import WorkflowEngine
+from backend.synthesis.context_compressor import ContextCompressor
+from backend.synthesis.response_planner import ResponsePlanner
+from backend.synthesis.response_sanitizer import ResponseSanitizer
 
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Synthesis Engines
+context_aggregator = ContextAggregator()
+workflow_engine = WorkflowEngine()
+context_compressor = ContextCompressor()
+response_planner_v2 = ResponsePlanner()
+response_sanitizer = ResponseSanitizer()
 
 
 # ---------------------------------------------------------------------------
@@ -190,9 +202,16 @@ async def _get_context(
     chatbot_id: int | None,
     domain: str | None = None,
     workflow: str | None = None,
+    active_entities: list[str] | None = None,
+    user_goal: str | None = None,
 ) -> tuple[list, float]:
     t0 = time.monotonic()
-    chunks = await async_retrieve(query, top_k=settings.top_k, chatbot_id=chatbot_id, domain=domain, workflow=workflow)
+    chunks = await async_retrieve(
+        query, top_k=settings.top_k, chatbot_id=chatbot_id, 
+        domain=domain, workflow=workflow,
+        active_entities=active_entities,
+        user_goal=user_goal
+    )
     elapsed_ms = (time.monotonic() - t0) * 1000
 
     if chatbot_id:
@@ -268,7 +287,10 @@ def _detect_domain_with_confidence(
 
 def _post_process_answer(answer: str) -> tuple[str, bool]:
     had_warning = False
-    answer = _strip_robotic_phrases(answer)
+    
+    # Use the humanization layer
+    answer = response_sanitizer.humanize(answer)
+    
     answer = sanitize_output(answer)
     if _has_placeholders(answer):
         had_warning = True
@@ -279,7 +301,6 @@ def _post_process_answer(answer: str) -> tuple[str, bool]:
                 "The specific details for that query weren't clearly identified in the site content. "
                 "I can provide a general overview instead — what would you like to know more about?"
             )
-    answer = re.sub(r'\s+', ' ', answer).strip()
     return answer, had_warning
 
 
@@ -289,11 +310,15 @@ def _post_process_answer(answer: str) -> tuple[str, bool]:
 
 async def _fetch_tavily(query: str, chatbot_website: str | None = None) -> list[dict]:
     """
-    Fetch Tavily results with retry + timeout.
-    Scoped query: prepend site domain if available for better relevance.
+    Fetch Tavily results with strict retry + timeout protection.
+    Tavily is ONLY for runtime chat augmentation, never used during ingestion.
     """
     from backend.llm.tavily_client import tavily_client
     from backend.utils.api_usage_tracker import track_api_call
+
+    # Security: Ensure no external search runs if API key is missing
+    if not settings.tavily_api_key:
+        return []
 
     scoped_query = query
     if chatbot_website:
@@ -302,23 +327,37 @@ async def _fetch_tavily(query: str, chatbot_website: str | None = None) -> list[
         if domain:
             scoped_query = f"site:{domain} {query}"
 
-    for attempt in range(2):  # 1 retry
+    MAX_ATTEMPTS = 2
+    TIMEOUT = 10.0  # 10s hard timeout per attempt
+
+    for attempt in range(MAX_ATTEMPTS):
         try:
+            # 1. Protect with asyncio.wait_for
             results = await asyncio.wait_for(
                 tavily_client.search(scoped_query, search_depth="basic", max_results=5),
-                timeout=8.0,
+                timeout=TIMEOUT,
             )
+            
+            # 2. Track usage and return
             if results:
                 track_api_call("tavily")
-                logger.info(f"[TAVILY] {len(results)} results for: {query!r} (attempt {attempt+1})")
+                logger.info(f"[TAVILY] {len(results)} results for query={query[:50]!r} (attempt {attempt+1})")
                 return results
-        except asyncio.TimeoutError:
-            logger.warning(f"[TAVILY] Timeout on attempt {attempt+1}")
-        except Exception as e:
-            logger.warning(f"[TAVILY] Error on attempt {attempt+1}: {e}")
-        if attempt == 0:
-            await asyncio.sleep(0.5)
+            
+            # If no results, don't bother retrying
+            return []
 
+        except asyncio.TimeoutError:
+            logger.warning(f"[TAVILY] Timeout ({TIMEOUT}s) for query={query[:50]!r} on attempt {attempt+1}")
+        except Exception as e:
+            logger.error(f"[TAVILY] Unexpected error on attempt {attempt+1}: {type(e).__name__}: {e}")
+        
+        # Exponential backoff for retry
+        if attempt < MAX_ATTEMPTS - 1:
+            wait_time = 1.0 * (attempt + 1)
+            await asyncio.sleep(wait_time)
+
+    # 3. Graceful Fallback: Return empty list so pipeline continues with local knowledge
     return []
 
 
@@ -364,10 +403,29 @@ async def _run_pipeline(
     # 5. Query expansion
     expanded_query = expand_query(query, domain=effective_domain)
     if expanded_query != query.lower():
-        logger.debug(f"[EXPAND] '{query}' → '{expanded_query}'")
+        logger.debug(f"[EXPAND] '{query}' -> '{expanded_query}'")
 
     # 6. Retrieval
-    chunks, retrieval_ms = await _get_context(expanded_query, effective_id, domain=effective_domain)
+    # Load session state for workflow-aware retrieval
+    active_entities: list[str] = []
+    user_goal: str | None = None
+    active_workflow: str | None = None
+    
+    if session_id and effective_id:
+        from backend.utils.goal_memory import get_or_create_goal
+        goal_obj = await get_or_create_goal(db, session_id, effective_id)
+        if goal_obj:
+            active_entities = (goal_obj.state_json or {}).get("discovered_entities", [])
+            user_goal = goal_obj.current_goal
+            active_workflow = goal_obj.active_workflow
+
+    chunks, retrieval_ms = await _get_context(
+        expanded_query, effective_id, 
+        domain=effective_domain,
+        workflow=active_workflow,
+        active_entities=active_entities,
+        user_goal=user_goal
+    )
 
     # 7. Confidence scoring
     from backend.utils.domain_intelligence import domain_detector as _dd
@@ -399,6 +457,28 @@ async def _run_pipeline(
             domain=effective_domain, workflow=goal.active_workflow,
         )
 
+    # --- SYNTHESIS LAYER (New) ---
+    # A. Aggregate Context
+    snapshot = context_aggregator.aggregate(chunks, query, site_profile)
+    
+    # B. Synthesize Workflow & Continuity
+    synthesized_workflow = workflow_engine.synthesize_workflow(query, intent, goal, history)
+    
+    # C. Meaning Synthesis (Context Compression)
+    synthesized_meaning = await context_compressor.synthesize_meaning(chunks, query, effective_domain)
+    
+    # D. Advanced Response Planning
+    raw_plan = response_planner_v2.plan(query, snapshot, synthesized_workflow, effective_domain)
+    response_plan_dict = {
+        "goal": raw_plan.get("goal", ""),
+        "workflow": raw_plan.get("workflow", ""),
+        "response_structure": raw_plan.get("response_structure", "conversational"),
+        "steps": raw_plan.get("steps", []),
+        "reasoning": raw_plan.get("reasoning", ""),
+        "recommendations": raw_plan.get("recommendations", [])
+    }
+    logger.info(f"[ORCH DEBUG] Generated plan keys: {list(response_plan_dict.keys())}")
+
     # 11. Tavily external research (if low confidence)
     tavily_results: list[dict] = []
     tavily_triggered = False
@@ -411,15 +491,13 @@ async def _run_pipeline(
         )
 
     # 12. LLM API tracking
-    track_api_call("ollama" if await ollama_client.is_available() else "openrouter")
+    track_api_call("ollama")
 
     # 13. Build OrchestrationInput
     bp = get_profile(profile or effective_domain)
     skill_guidance = get_skill_guidance(intent)
 
-    session_entities: list[str] = []
-    if goal and goal.state_json:
-        session_entities = goal.state_json.get("discovered_entities", [])
+    session_entities = snapshot.entities # Use synthesized entities
 
     orch_input = OrchestrationInput(
         query=query,
@@ -434,14 +512,18 @@ async def _run_pipeline(
         bp_instructions=bp.instructions,
         site_profile=site_profile,
         rolling_summary=rolling_summary,
-        active_workflow=goal.active_workflow if goal else None,
-        workflow_stage=goal.workflow_stage if goal else "browsing",
-        current_goal=goal.current_goal if goal else None,
+        active_workflow=synthesized_workflow.active_workflow,
+        workflow_stage=synthesized_workflow.current_stage,
+        current_goal=synthesized_workflow.active_goal,
         user_type=(goal.state_json or {}).get("user_type", "new_visitor") if goal else "new_visitor",
         session_entities=session_entities,
         tavily_results=tavily_results,
         tavily_triggered=tavily_triggered,
         skill_guidance=skill_guidance,
+        context_snapshot=snapshot,
+        synthesized_workflow=synthesized_workflow,
+        synthesized_meaning=synthesized_meaning,
+        response_plan_dict=response_plan_dict,
     )
 
     conf_dict = {
@@ -490,7 +572,17 @@ async def run_orchestration(
                 "answer": "Session error: unable to verify chatbot identity. Please refresh and try again.",
                 "citations": [], "intent": "error", "domain": "general", "profile": "general",
             }
-        raise
+        logger.error(f"[ORCH ERROR] ValueError in pipeline: {e}", exc_info=True)
+        return {
+            "answer": "I encountered an internal planning error, but I'll do my best to help. How can I assist you?",
+            "citations": [], "intent": "error", "domain": "general", "profile": "general", "confidence": 0.0
+        }
+    except Exception as e:
+        logger.error(f"[ORCH ERROR] Unexpected error in pipeline: {e}", exc_info=True)
+        return {
+            "answer": "I'm having trouble processing that right now. How else can I help?",
+            "citations": [], "intent": "error", "domain": "general", "profile": "general", "confidence": 0.0
+        }
 
     goal = conf["goal"]
     bp = conf["bp"]
@@ -583,7 +675,15 @@ async def run_orchestration_stream(
         if "session_isolation_failed" in str(e):
             yield {"type": "error", "content": "Session isolation: chatbot identity mismatch. Please refresh."}
             return
-        raise
+        logger.error(f"[ORCH ERROR] ValueError in stream pipeline: {e}", exc_info=True)
+        yield {"type": "token", "content": "I encountered an internal planning error, but I'll do my best to help. "}
+        yield {"type": "final", "answer": "I encountered an internal planning error, but I'll do my best to help. ", "citations": [], "confidence": 0.0}
+        return
+    except Exception as e:
+        logger.error(f"[ORCH ERROR] Unexpected error in stream pipeline: {e}", exc_info=True)
+        yield {"type": "token", "content": "I'm having trouble processing that right now. How else can I help?"}
+        yield {"type": "final", "answer": "I'm having trouble processing that right now. How else can I help?", "citations": [], "confidence": 0.0}
+        return
 
     goal = conf["goal"]
     bp = conf["bp"]
@@ -603,6 +703,21 @@ async def run_orchestration_stream(
         "tavily_triggered": orch_input.tavily_triggered,
     }
 
+    # High-level pipeline observation
+    yield {"type": "thought", "content": f"Intent: {intent} ({effective_domain} domain)"}
+    yield {"type": "thought", "content": f"Retrieval: Found {len(orch_input.chunks)} relevant knowledge chunks."}
+    
+    if orch_input.tavily_triggered:
+        yield {"type": "thought", "content": f"Low local confidence. Triggered external research via Tavily ({len(orch_input.tavily_results)} results)."}
+
+    yield {"type": "thought", "content": "Synthesizing multi-page context and resolving entity relationships..."}
+    # (Context was already aggregated in _run_pipeline, we just report it here)
+    
+    if orch_input.synthesized_workflow.active_workflow:
+        yield {"type": "thought", "content": f"Workflow detected: {orch_input.synthesized_workflow.active_workflow} (Stage: {orch_input.synthesized_workflow.current_stage})"}
+    
+    yield {"type": "thought", "content": "Generating response plan based on synthesized meaning..."}
+
     # Graceful fallback
     if not orch_input.chunks and not orch_input.tavily_results and not confidence.should_infer:
         fallback_msg = build_fallback_message(confidence, effective_domain)
@@ -616,9 +731,9 @@ async def run_orchestration_stream(
     # Emit response plan as thought (for transparency in UI)
     plan = orch_output.response_plan
     thought = (
-        f"Goal: {plan['goal']} | "
-        f"Structure: {plan['response_structure']} | "
-        f"Workflow: {plan['workflow']}"
+        f"Goal: {plan.get('goal', '')} | "
+        f"Structure: {plan.get('response_structure', 'conversational')} | "
+        f"Workflow: {plan.get('workflow', '')}"
     )
     yield {"type": "thought", "content": thought}
 
@@ -667,3 +782,4 @@ async def run_orchestration_stream(
         "response_plan": orch_output.response_plan,
         "tavily_used": orch_output.tavily_used,
     }
+

@@ -102,19 +102,23 @@ async def update_rolling_summary(db: AsyncSession, conversation_id: int, model: 
     history_text = "\n".join([f"{h['role'].upper()}: {h['content']}" for h in history[-10:]])
     
     prompt = f"""
-    Summarize the following conversation history into a single compact paragraph.
-    Focus on: user intent, completed steps, pending actions, and key entities discussed.
-    Avoid conversational filler.
+    Synthesize the following conversation history into a structured contextual memory block.
     
+    Format:
+    ACTIVE WORKFLOW: <workflow name>
+    CURRENT GOAL: <what the user is trying to achieve>
+    IDENTIFIED ENTITIES: <list of key people, places, or technical terms>
+    COMPLETED STEPS: <list of things already done>
+    PENDING ACTIONS: <list of things the user still needs to do>
+    SUMMARY: <1-2 sentence overview of the conversation state>
+
     HISTORY:
     {history_text}
     
-    SUMMARY:
+    SYNTHESIS:
     """
     try:
         summary = await ollama_client.generate(prompt, model=model)
-        # Store in SessionMemory or Conversation table? 
-        # For now, we just return it to be used in the prompt.
         return summary.strip()
     except Exception:
         return ""

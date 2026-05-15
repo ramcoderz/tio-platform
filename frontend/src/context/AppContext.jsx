@@ -1,27 +1,40 @@
-import { createContext, useContext, useMemo, useState, useEffect } from "react";
+import { createContext, useContext, useState, useEffect } from "react";
 import { useChatStore } from "../store";
+import { api } from "../api";
 
 const AppContext = createContext(null);
 
 export function AppProvider({ children }) {
   const [theme, setTheme] = useState(() => localStorage.getItem("tio_theme") || "dark");
   const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    console.log("[BOOT] AppContext Initializing...");
     const token = localStorage.getItem("token");
+    
     if (token) {
-      import("../api").then(({ api }) => {
-        api("/auth/me")
+      console.log("[BOOT] Token found, hydrating auth...");
+      api("/auth/me")
           .then((u) => {
+            console.log("[BOOT] Auth successful:", u.username);
             setUser(u);
             // Anchor session to this user account
-            useChatStore.getState().syncSession(u.id);
+            const sid = useChatStore.getState().syncSession(u.id);
+            console.log("[BOOT] Session synchronized:", sid);
           })
-          .catch(() => {
+          .catch((err) => {
+            console.error("[BOOT] Auth hydration failed:", err);
             localStorage.removeItem("token");
             setUser(null);
+          })
+          .finally(() => {
+            console.log("[BOOT] Initialization sequence complete");
+            setLoading(false);
           });
-      });
+    } else {
+      console.log("[BOOT] No token, guest mode.");
+      setLoading(false);
     }
 
     // --- Inactivity Timeout (4 Hours) ---
@@ -58,7 +71,7 @@ export function AppProvider({ children }) {
     setTheme(next);
     // Sync to backend
     if (user) {
-      import("../api").then(({ api }) => api("/auth/me", { method: "PUT", body: JSON.stringify({ theme: next }) }));
+      api("/auth/me", { method: "PUT", body: JSON.stringify({ theme: next }) });
     }
   };
 
@@ -68,7 +81,7 @@ export function AppProvider({ children }) {
     setTheme(next);
     // Sync to backend
     if (user) {
-      import("../api").then(({ api }) => api("/auth/me", { method: "PUT", body: JSON.stringify({ theme: next }) }));
+      api("/auth/me", { method: "PUT", body: JSON.stringify({ theme: next }) });
     }
   };
 
@@ -82,7 +95,7 @@ export function AppProvider({ children }) {
 
 
   return (
-    <AppContext.Provider value={{ theme, toggleTheme, setLightVariant, user, setUser, logout }}>
+    <AppContext.Provider value={{ theme, toggleTheme, setLightVariant, user, setUser, loading, logout }}>
       {children}
     </AppContext.Provider>
   );

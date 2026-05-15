@@ -1,4 +1,7 @@
 import uvicorn
+from dotenv import load_dotenv
+load_dotenv()  # Load .env into os.environ before anything else
+
 from backend.config.settings import get_settings
 
 settings = get_settings()

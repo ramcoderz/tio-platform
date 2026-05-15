@@ -31,6 +31,8 @@ import time
 import logging
 from dataclasses import dataclass, field
 from typing import Any
+from backend.synthesis.context_aggregator import ContextSnapshot
+from backend.synthesis.workflow_engine import WorkflowState
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,12 @@ class OrchestrationInput:
 
     # Skill guidance
     skill_guidance: str = ""
+
+    # Synthesis Layer (New)
+    context_snapshot: ContextSnapshot | None = None
+    synthesized_workflow: WorkflowState | None = None
+    synthesized_meaning: str | None = None
+    response_plan_dict: dict | None = None
 
 
 @dataclass
@@ -273,7 +281,7 @@ _RESPONSE_STRUCTURES: dict[str, dict] = {
         "tone":      "Clear, actionable",
     },
     "api_assistant": {
-        "structure": "Overview → Code example → Notes",
+        "structure": "Overview -> Code example -> Notes",
         "include":   ["Auth method", "Endpoint details", "Error codes", "Code snippet"],
         "tone":      "Technical, concise",
     },
@@ -351,16 +359,18 @@ def format_response_plan(plan: dict) -> str:
     """Format the response plan as a compact prompt block."""
     lines = [
         f"RESPONSE PLAN:",
-        f"  Goal: {plan['goal']}",
-        f"  Structure: {plan['response_structure']}",
-        f"  Include: {'; '.join(plan['key_inclusions'])}",
-        f"  Tone: {plan['tone_hint']}",
+        f"  Goal: {plan.get('goal', '')}",
+        f"  Structure: {plan.get('response_structure', 'conversational')}",
+        f"  Include: {'; '.join(plan.get('key_inclusions', []))}",
+        f"  Tone: {plan.get('tone_hint', '')}",
     ]
-    if plan["mode_guidance"]:
-        lines.append(f"  Mode: {plan['mode_guidance']}")
-    if plan["contextual_entities"]:
-        lines.append(f"  Key entities to reference: {', '.join(plan['contextual_entities'][:8])}")
-    if not plan["has_context"]:
+    mode = plan.get("mode_guidance", "")
+    if mode:
+        lines.append(f"  Mode: {mode}")
+    entities = plan.get("contextual_entities", [])
+    if entities:
+        lines.append(f"  Key entities to reference: {', '.join(entities[:8])}")
+    if not plan.get("has_context", True):
         lines.append("  Note: No retrieved context — answer from domain knowledge only. Do NOT fabricate specifics.")
     return "\n".join(lines)
 
@@ -372,26 +382,26 @@ def format_response_plan(plan: dict) -> str:
 _RELATIONSHIP_HINTS: dict[str, dict[str, str]] = {
     "tourism": {
         "attraction_recommender": "If recommending attractions, note nearby rides/dining if available in context.",
-        "tourism_planner":        "Connect attraction → zone → timing for logical flow.",
+        "tourism_planner":        "Connect attraction -> zone -> timing for logical flow.",
         "ride_optimizer":         "Link rides to wait times and proximity.",
     },
     "education": {
-        "course_finder":          "Link department → faculty → placement outcomes.",
-        "admission_assistant":    "Link admission requirements → application portal → deadlines.",
-        "scholarship_helper":     "Link scholarship → eligibility → department.",
+        "course_finder":          "Link department -> faculty -> placement outcomes.",
+        "admission_assistant":    "Link admission requirements -> application portal -> deadlines.",
+        "scholarship_helper":     "Link scholarship -> eligibility -> department.",
     },
     "medical": {
-        "dept_navigator":         "Link symptom/concern → department → specialist → contact.",
-        "appointment_guidance":   "Link appointment type → department → booking method → contact.",
-        "insurance_assistant":    "Link coverage type → claim process → billing contact.",
+        "dept_navigator":         "Link symptom/concern -> department -> specialist -> contact.",
+        "appointment_guidance":   "Link appointment type -> department -> booking method -> contact.",
+        "insurance_assistant":    "Link coverage type -> claim process -> billing contact.",
     },
     "developer": {
-        "api_assistant":          "Link API endpoint → authentication → SDK → code example.",
-        "integration_helper":     "Link webhook → event type → handler → error codes.",
-        "sdk_guide":              "Link SDK installation → initialization → usage → troubleshooting.",
+        "api_assistant":          "Link API endpoint -> authentication -> SDK -> code example.",
+        "integration_helper":     "Link webhook -> event type -> handler -> error codes.",
+        "sdk_guide":              "Link SDK installation -> initialization -> usage -> troubleshooting.",
     },
     "ecommerce": {
-        "shopping_guide":         "Link product → pricing → availability → shipping/returns.",
+        "shopping_guide":         "Link product -> pricing -> availability -> shipping/returns.",
     },
 }
 
@@ -544,46 +554,74 @@ def build_session_memory_block(
 _CONSTRAINTS = """\
 ABSOLUTE CONSTRAINTS (override everything above):
 - NEVER use bracket placeholders: [Name], [Place], [Details], [Institution], etc.
-- NEVER use robotic filler: "I'd be happy to help", "Based on the context", "As an AI", \
-"Certainly!", "Of course!", "Great question!", "Let me help you with that".
+- NEVER use these robotic filler phrases: "I'd be happy to help", "Based on the context", \
+"As an AI", "Certainly!", "Of course!", "Great question!", "Let me help you with that", \
+"As per the provided context", "Based on available information", "External research indicates", \
+"verified for recruitment eligibility", "I can confirm that", "According to our records".
 - START DIRECTLY with the answer. No conversational introductions.
 - Every factual claim must be grounded in RETRIEVED CONTEXT or SITE INTELLIGENCE above.
-- NEVER fabricate names, prices, phone numbers, dates, or entities not in the context.
-- If a specific detail is missing from context, say so naturally: \
-"The indexed content doesn't specify exact [detail] — here's what I do know: ..."
-- If context is from EXTERNAL RESEARCH, clearly treat it as supplementary, not primary.
-- Responses must feel conversational and grounded, not like a template readout.\
+- NEVER fabricate names, prices, phone numbers, dates, credentials, or entities not in context.
+- FACULTY/PROFILE QUERIES: Only state work history, qualifications, publications that appear \
+EXPLICITLY in the retrieved profile documents or PDF content. If employment history is not in \
+the indexed profile, say: "No previous employment history was found in the indexed profile." \
+Do NOT infer, extrapolate, or fill gaps with generic academic credentials.
+- RESUME/CV QUERIES: Synthesize only from profile chunks and PDF sections. Cite the section \
+(e.g. "From the Experience section:", "From the Publications list:") so the user knows \
+where the information came from.
+- If a specific detail is missing: say so naturally: \
+"The indexed content doesn't include [detail]." Never fabricate it.
+- If context is from EXTERNAL RESEARCH, treat it as supplementary only — never as primary \
+evidence for individual credentials.
+- Responses must feel direct, conversational, and factual — not like a template readout.\
 """
 
 
 def build_prompt(inp: OrchestrationInput) -> OrchestrationOutput:
     """
-    Assemble the full layered prompt from an OrchestrationInput.
-    Returns OrchestrationOutput with the prompt + metadata.
+    Assemble the full layered prompt from an OrchestrationInput using synthesized context.
     """
     t0 = time.monotonic()
 
-    # --- Layer 4: Context Compression ---
-    compressed_context, was_compressed = compress_chunks(inp.chunks, inp.query)
+    # --- Synthesis Blocks ---
+    snapshot_block = ""
+    if inp.context_snapshot:
+        snapshot_block = (
+            "CONTEXTUAL SNAPSHOT:\n"
+            f"  Entities: {', '.join(inp.context_snapshot.entities)}\n"
+            f"  Relationships: {'; '.join(inp.context_snapshot.relationships[:5])}\n"
+            f"  Related Pages: {', '.join(inp.context_snapshot.related_pages[:5])}"
+        )
+
+    meaning_block = ""
+    if inp.synthesized_meaning:
+        meaning_block = f"SYNTHESIZED MEANING: {inp.synthesized_meaning}"
+
+    workflow_block = ""
+    if inp.synthesized_workflow:
+        ws = inp.synthesized_workflow
+        workflow_block = (
+            "WORKFLOW CONTEXT:\n"
+            f"  Active: {ws.active_workflow}\n"
+            f"  Stage: {ws.current_stage}\n"
+            f"  Goal: {ws.active_goal}"
+        )
+        if ws.pending_steps:
+            workflow_block += f"\n  Next Recommended Steps: {', '.join(ws.pending_steps[:3])}"
 
     # --- Layer 7: External Research ---
     tavily_block = ""
     if inp.tavily_triggered and inp.tavily_results:
         tavily_block = synthesize_tavily(inp.tavily_results, inp.query)
 
-    # --- Layer 8: Response Plan (deterministic) ---
-    site_entities = inp.site_profile.get("top_entities", []) if inp.site_profile else []
-    response_plan = build_response_plan(
-        query=inp.query,
-        intent=inp.intent,
-        domain=inp.domain,
-        conversation_mode=inp.conversation_mode,
-        current_goal=inp.current_goal,
-        active_workflow=inp.active_workflow,
-        chunks=inp.chunks,
-        site_entities=site_entities if isinstance(site_entities, list) else [],
-    )
-    plan_block = format_response_plan(response_plan)
+    # --- Layer 8: Response Plan ---
+    plan_block = ""
+    if inp.response_plan_dict:
+        plan_block = "RESPONSE PLAN:\n"
+        for k, v in inp.response_plan_dict.items():
+            if isinstance(v, list):
+                plan_block += f"  {k.title()}: {', '.join(v)}\n"
+            else:
+                plan_block += f"  {k.title()}: {v}\n"
 
     # --- Layer 1: System Identity ---
     identity_block = (
@@ -597,32 +635,6 @@ def build_prompt(inp: OrchestrationInput) -> OrchestrationOutput:
     # --- Layer 2: Site Intelligence ---
     site_block = build_site_intelligence_block(inp.site_profile or {})
 
-    # --- Layer 3: Session Memory ---
-    session_block = build_session_memory_block(
-        rolling_summary=inp.rolling_summary,
-        active_workflow=inp.active_workflow,
-        current_goal=inp.current_goal,
-        session_entities=inp.session_entities,
-        conversation_mode=inp.conversation_mode,
-    )
-
-    # --- Layer 5: Relationship Context ---
-    relationship_block = build_relationship_context(
-        domain=inp.domain,
-        intent=inp.intent,
-        site_relationships=inp.site_profile.get("relationships", []) if inp.site_profile else [],
-    )
-
-    # --- Layer 6: Workflow Context ---
-    workflow_block = build_workflow_context(
-        active_workflow=inp.active_workflow,
-        workflow_stage=inp.workflow_stage,
-        intent=inp.intent,
-    )
-
-    # --- Skill guidance ---
-    skill_block = f"SKILL GUIDANCE: {inp.skill_guidance}" if inp.skill_guidance else ""
-
     # --- Confidence note ---
     confidence_block = ""
     if inp.retrieval_confidence < 0.35:
@@ -632,69 +644,58 @@ def build_prompt(inp: OrchestrationInput) -> OrchestrationOutput:
             "Be honest about what is and isn't confirmed."
         )
 
-    # --- Assemble system prompt from ordered blocks ---
+    # --- Assemble system prompt ---
     system_layers = [
-        inp.bp_instructions,   # Domain behavior profile (base instructions + domain rules)
+        inp.bp_instructions,
         identity_block,
         site_block,
-        session_block,
-        relationship_block,
+        snapshot_block,
+        meaning_block,
         workflow_block,
-        skill_block,
         confidence_block,
         plan_block,
     ]
-    system_content = "\n\n".join(b for b in system_layers if b.strip())
+    system_content = "\n\n".join(b for b in system_layers if b and b.strip())
 
     # --- Build final prompt string ---
     parts: list[str] = [f"SYSTEM:\n{system_content}"]
 
     # Retrieved context block (Layer 4)
-    if compressed_context:
-        parts.append(f"RETRIEVED CONTEXT:\n{compressed_context}")
-    elif not inp.tavily_triggered:
-        parts.append(
-            "RETRIEVED CONTEXT: No relevant content found in the knowledge base for this query. "
-            "Answer from Site Intelligence and domain knowledge only. "
-            "Do NOT fabricate specific names, prices, or details."
-        )
+    # We still provide raw chunks for direct grounding, but the LLM follows the synthesis
+    context, was_compressed = compress_chunks(inp.chunks, inp.query)
+    if context:
+        parts.append(f"RETRIEVED CHUNKS (Reference only):\n{context}")
 
-    # External research (Layer 7)
+    # External research
     if tavily_block:
         parts.append(tavily_block)
 
-    # Constraints (always last in system section)
+    # Constraints
     parts.append(_CONSTRAINTS)
 
-    # Conversation history (last N turns)
+    # History
     history_turns = inp.history[-8:]
     for turn in history_turns:
         role = turn.get("role", "user").upper()
         content = turn.get("content", "")
         parts.append(f"{role}: {content}")
 
-    # User query
+    # Query
     parts.append(f"USER: {inp.query}")
     parts.append("ASSISTANT:")
 
     prompt = "\n\n".join(parts)
 
     orchestration_ms = (time.monotonic() - t0) * 1000
-    prompt_tokens_est = len(prompt) // 4  # rough 4 chars per token
-
-    logger.info(
-        f"[PROMPT ORCHESTRATOR] domain={inp.domain} intent={inp.intent} "
-        f"chunks={len(inp.chunks)} compressed={was_compressed} "
-        f"tavily={inp.tavily_triggered} tokens_est={prompt_tokens_est} "
-        f"time={orchestration_ms:.1f}ms"
-    )
+    prompt_tokens_est = len(prompt) // 4
 
     return OrchestrationOutput(
         prompt=prompt,
-        response_plan=response_plan,
+        response_plan=inp.response_plan_dict or {},
         context_compressed=was_compressed,
         chunks_used=len(inp.chunks),
         tavily_used=inp.tavily_triggered and bool(inp.tavily_results),
         prompt_tokens_est=prompt_tokens_est,
         orchestration_ms=orchestration_ms,
     )
+

@@ -1,16 +1,18 @@
 """
-Web scraper — Trafilatura-first with Playwright fallback.
-Domain detection uses multi-signal scoring: keyword frequency + URL signals + metadata.
+Web scraper — Deterministic BFS engine using httpx and BeautifulSoup.
+Domain detection uses multi-signal scoring: keyword frequency + URL signals + host hints.
 """
 
 import asyncio
 import re
 import logging
+import time
 from urllib.parse import urlparse
 
 import trafilatura
 
 logger = logging.getLogger(__name__)
+from backend.utils.console import console
 
 
 # ---------------------------------------------------------------------------
@@ -60,9 +62,13 @@ URL_DOMAIN_BOOSTS: dict[str, list[str]] = {
     "ecommerce": ["/products", "/catalog", "/shop", "/cart", "/pricing", "/orders"],
 }
 
-# Minimum score to assign a domain (below this → "general")
+# Minimum score to assign a domain (below this -> "general")
 DOMAIN_THRESHOLD = 4
 
+
+import httpx
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlsplit
 
 class Scraper:
     def __init__(self):
@@ -70,150 +76,172 @@ class Scraper:
             r"/privacy", r"/cookies", r"/terms", r"/legal",
             r"/track", r"/login", r"/signup", r"/logout",
             r"/license", r"/disclaimer", r"/copyright",
+            r"/cart", r"/checkout", r"/account", r"/search",
         ]
         self.priority_keywords = [
             "about", "services", "faq", "docs", "products",
             "courses", "departments", "support", "attractions",
             "pricing", "features", "api", "admission",
         ]
+        self.max_pages = 30
+        self.max_depth = 1
+        self.request_timeout = 15.0
+        self.max_crawl_time = 90.0
 
-    # -----------------------------------------------------------------------
-    # Content extraction
-    # -----------------------------------------------------------------------
+    def _normalize_url(self, url: str) -> str:
+        """Aggressive normalization to prevent duplicate crawls and loops."""
+        try:
+            parsed = urlsplit(url)
+            # Lowercase domain, strip fragments and trailing slashes
+            netloc = parsed.netloc.lower()
+            path = parsed.path.rstrip('/')
+            if not path: path = ''
+            
+            # Reconstruct without fragments or noisy query params
+            return f"{parsed.scheme}://{netloc}{path}"
+        except:
+            return url
 
     async def extract_content(self, url: str) -> str:
-        """Extract semantic content from a URL using Trafilatura with fallback."""
+        """Extract semantic content using httpx + Trafilatura/BS4."""
+        _UNICODE_SANITIZE = {
+            "\u2192": "->", "\u2190": "<-", "\u2013": "-", "\u2014": "--",
+            "\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+            "\u2022": "*", "\u00a0": " ", "\u2026": "...", "\u00ae": "(R)",
+            "\u2122": "(TM)", "\u00b0": " deg ", "\u00b7": "*",
+        }
+
+        def _sanitize(text: str) -> str:
+            for char, rep in _UNICODE_SANITIZE.items():
+                text = text.replace(char, rep)
+            return text.encode("utf-8", errors="replace").decode("utf-8")
+
         try:
-            downloaded = await asyncio.to_thread(trafilatura.fetch_url, url)
-            if not downloaded:
-                downloaded = await self._fetch_with_playwright(url)
-            
+            async with httpx.AsyncClient(timeout=self.request_timeout, follow_redirects=True) as client:
+                resp = await client.get(url, headers={"User-Agent": "TiO-Crawler/1.0"})
+                resp.raise_for_status()
+                html = resp.text
+
             # Use Trafilatura for core extraction
             content = trafilatura.extract(
-                downloaded,
+                html,
                 include_comments=False,
                 include_tables=True,
                 no_fallback=False,
                 output_format="txt",
             )
             
-            # If trafilatura fails to get meaningful text, use BeautifulSoup for raw extraction
             if not content or len(content.split()) < 30:
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(downloaded, "html.parser")
-                # Remove scripts, styles, and nav
-                for s in soup(["script", "style", "nav", "footer", "header"]):
+                console.warning(f"Empty or low-content page skipped: {url}", stage="EXTRACTING")
+                soup = BeautifulSoup(html, "html.parser")
+                for s in soup(["script", "style", "nav", "footer", "header", "aside"]):
                     s.decompose()
                 content = soup.get_text(separator="\n", strip=True)
                 
-            return content or ""
-        except Exception as e:
-            logger.warning(f"[SCRAPER] extract_content error for {url}: {e}")
+            return _sanitize(content or "")
+        except asyncio.TimeoutError:
+            console.error(f"Extraction timeout: {url}", stage="EXTRACTING")
             return ""
-
-    async def _fetch_with_playwright(self, url: str) -> str:
-        """Playwright fallback for JS-rendered pages."""
-        try:
-            from playwright.async_api import async_playwright
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
-                # Use a real user agent to avoid bot detection
-                await page.set_extra_http_headers({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
-                await page.goto(url, wait_until="networkidle", timeout=60_000)
-                content = await page.content()
-                await browser.close()
-                return content
         except Exception as e:
-            logger.warning(f"[SCRAPER] Playwright fallback failed for {url}: {e}")
+            if "404" in str(e):
+                console.warning(f"Page not found (404): {url}", stage="EXTRACTING")
+            elif "403" in str(e):
+                console.warning(f"Access blocked (403): {url}", stage="EXTRACTING")
+            else:
+                console.error(f"Extraction failure: {e} | {url}", stage="EXTRACTING")
             return ""
-
-    # -----------------------------------------------------------------------
-    # Asset discovery
-    # -----------------------------------------------------------------------
 
     async def discover_assets(
-        self, base_url: str, limit: int = 20, depth: int = 1, allow_external: bool = False
+        self, base_url: str, limit: int = 30, depth: int = 1, allow_external: bool = False
     ) -> tuple[list[str], list[str]]:
         """
-        Crawl the website up to `depth` levels deep.
-        Returns (page_urls, document_urls).
-        Max pages/docs is capped at `limit`.
+        DETERMINISTIC BFS Crawler — httpx-based, Playwright disabled for stability.
+        Guaranteed to terminate via hard limits and timeouts.
         """
-        domain = urlparse(base_url).netloc
-        discovered_pages: set[str] = {base_url}
+        start_time = time.monotonic()
+        root_domain = urlparse(base_url).netloc.lower()
+        
+        discovered_pages: set[str] = {self._normalize_url(base_url)}
         discovered_docs: set[str] = set()
-        to_visit: list[tuple[str, int]] = [(base_url, 0)]
         visited: set[str] = set()
+        queue: list[tuple[str, int]] = [(self._normalize_url(base_url), 0)]
+        
         doc_extensions = {".pdf", ".docx", ".txt", ".md"}
+        
+        logger.info(f"[CRAWL] Starting stable BFS discovery for {base_url} (Limit={limit}, Depth={depth})")
 
-        try:
-            from playwright.async_api import async_playwright
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                page = await browser.new_page()
+        async with httpx.AsyncClient(timeout=self.request_timeout, follow_redirects=True) as client:
+            while queue and len(discovered_pages) < limit:
+                # 1. Hard limits check
+                if time.monotonic() - start_time > self.max_crawl_time:
+                    logger.warning(f"[CRAWL] Timeout reached ({self.max_crawl_time}s). Terminating.")
+                    break
 
-                while to_visit and len(discovered_pages) + len(discovered_docs) < limit * 10:
-                    # Sort to_visit by priority on each iteration
-                    to_visit = sorted(to_visit, key=lambda x: self._score_url(base_url)(x[0]), reverse=True)
-                    
-                    current_url, current_depth = to_visit.pop(0)
-                    if current_url in visited or current_depth > depth:
+                current_url, current_depth = queue.pop(0)
+                if current_url in visited or current_depth > depth:
+                    continue
+                
+                visited.add(current_url)
+                # console.info(f"Visiting {len(visited)}: {current_url}", stage="CRAWLING")
+
+                try:
+                    resp = await client.get(current_url, headers={"User-Agent": "TiO-Crawler/1.0"})
+                    if resp.status_code != 200:
                         continue
+                    
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    links = [a.get("href") for a in soup.find_all("a", href=True)]
+                    
+                    for link in links:
+                        # Resolve relative URLs
+                        absolute_url = urljoin(current_url, link)
+                        norm_url = self._normalize_url(absolute_url)
+                        parsed = urlparse(norm_url)
+                        
+                        # Boundary checks
+                        if not allow_external and parsed.netloc.lower() != root_domain:
+                            # console.info(f"External URL skipped: {norm_url}", stage="CRAWLING")
+                            continue
+                        
+                        path_lower = parsed.path.lower()
+                        
+                        # Document check
+                        if any(path_lower.endswith(ext) for ext in doc_extensions):
+                            discovered_docs.add(norm_url)
+                            continue
 
-                    visited.add(current_url)
-                    try:
-                        await page.goto(current_url, wait_until="networkidle", timeout=30_000)
-                        links = await page.eval_on_selector_all(
-                            "a[href]", "elements => elements.map(e => e.href)"
-                        )
-                        for link in links:
-                            parsed = urlparse(link)
-                            if not allow_external and parsed.netloc != domain:
-                                continue
+                        # Noise check
+                        if any(re.search(pat, norm_url.lower()) for pat in self.ignored_patterns):
+                            continue
+                        
+                        # Media check
+                        if any(path_lower.endswith(ext) for ext in {".png", ".jpg", ".jpeg", ".gif", ".svg", ".zip", ".exe"}):
+                            continue
 
-                            # Normalize URL
-                            clean_link = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-                            if clean_link.endswith("/"):
-                                clean_link = clean_link[:-1]
+                        if norm_url not in discovered_pages:
+                            discovered_pages.add(norm_url)
+                            if current_depth + 1 <= depth:
+                                queue.append((norm_url, current_depth + 1))
+                            
+                            if len(discovered_pages) >= limit:
+                                break
+                        else:
+                            # console.warning(f"Duplicate URL skipped: {norm_url}", stage="CRAWLING")
+                            pass
 
-                            path_lower = parsed.path.lower()
+                except asyncio.TimeoutError:
+                    console.warning(f"Request timeout: {current_url}", stage="CRAWLING")
+                    continue
+                except Exception as e:
+                    console.error(f"Crawl error: {e} | {current_url}", stage="CRAWLING")
+                    continue
 
-                            # Document?
-                            if any(path_lower.endswith(ext) for ext in doc_extensions):
-                                discovered_docs.add(clean_link)
-                                continue
-
-                            # Skip binaries and noise
-                            if any(path_lower.endswith(ext) for ext in {
-                                ".exe", ".zip", ".rar", ".msi", ".js", ".css",
-                                ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
-                                ".woff", ".woff2", ".ttf",
-                            }):
-                                continue
-
-                            # Skip noise patterns (Privacy, Login, etc.)
-                            if any(re.search(pat, clean_link.lower()) for pat in self.ignored_patterns):
-                                continue
-
-                            if clean_link not in discovered_pages:
-                                discovered_pages.add(clean_link)
-                                if current_depth + 1 <= depth:
-                                    to_visit.append((clean_link, current_depth + 1))
-
-                        if len(discovered_pages) + len(discovered_docs) >= limit * 10:
-                            break
-                    except Exception as e:
-                        logger.debug(f"[SCRAPER] Error visiting {current_url}: {e}")
-
-                await browser.close()
-        except Exception as e:
-            logger.warning(f"[SCRAPER] discover_assets error for {base_url}: {e}")
-
-        # Final sort and limit
+        # Final ranking and result selection
         page_scorer = self._score_url(base_url)
         sorted_pages = sorted(list(discovered_pages), key=page_scorer, reverse=True)[:limit]
         sorted_docs = sorted(list(discovered_docs), key=lambda x: page_scorer(x) + 10, reverse=True)[:limit]
+        
+        logger.info(f"[CRAWL] Discovery Complete. Pages={len(sorted_pages)}, Docs={len(sorted_docs)}")
         return sorted_pages, sorted_docs
 
     def _score_url(self, base_url: str, is_doc: bool = False):
@@ -306,3 +334,4 @@ class Scraper:
 
 
 scraper = Scraper()
+

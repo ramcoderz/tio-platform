@@ -91,6 +91,7 @@ class OllamaClient:
         self.client = httpx.AsyncClient(timeout=timeout)
         self._health_cache = {"checked_at": 0.0, "ok": False}
         self.settings = get_settings()
+        self.semaphore = asyncio.Semaphore(getattr(self.settings, 'max_concurrent_llm_requests', 2))
 
     async def is_available(self) -> bool:
         now = time.time()
@@ -116,115 +117,87 @@ class OllamaClient:
         except Exception:
             return False
 
-    # --- OpenRouter fallback ---
+    # --- OpenRouter fallback (Disabled for Stabilization) ---
 
     async def _openrouter_generate_stream(self, prompt: str):
-        if not self.settings.openrouter_api_key:
-            yield (
-                "Ollama is offline and no OpenRouter API key is configured. "
-                "Set OPENROUTER_API_KEY in your .env file to enable cloud LLM fallback. "
-                "Supported models include: anthropic/claude-3-haiku, google/gemini-flash-1.5, mistralai/mistral-7b-instruct."
-            )
-            return
-
-        url = f"{self.settings.openrouter_base_url.rstrip('/')}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.settings.openrouter_api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:8000",
-            "X-Title": "TiO"
-        }
-        payload = {
-            "model": self.settings.openrouter_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": True,
-        }
-        try:
-            async with self.client.stream("POST", url, headers=headers, json=payload) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if line.startswith("data: ") and line != "data: [DONE]":
-                        try:
-                            data = json.loads(line[6:])
-                            delta = data.get("choices", [{}])[0].get("delta", {})
-                            if "content" in delta:
-                                yield delta["content"]
-                        except json.JSONDecodeError:
-                            continue
-        except Exception as e:
-            yield f"\n[OpenRouter Error: {e}]"
+        yield "[SYSTEM] Local inference unavailable. OpenRouter fallback is disabled during stabilization mode."
 
     async def _openrouter_generate(self, prompt: str) -> str:
-        if not self.settings.openrouter_api_key:
-            return (
-                "Ollama is offline and no OpenRouter API key is configured. "
-                "Set OPENROUTER_API_KEY in your .env file to enable cloud LLM fallback. "
-                "Supported models: anthropic/claude-3-haiku, google/gemini-flash-1.5, mistralai/mistral-7b-instruct."
-            )
-        url = f"{self.settings.openrouter_base_url.rstrip('/')}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {self.settings.openrouter_api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": self.settings.openrouter_model,
-            "messages": [{"role": "user", "content": prompt}],
-            "stream": False,
-        }
-        try:
-            res = await self.client.post(url, headers=headers, json=payload)
-            res.raise_for_status()
-            return res.json()["choices"][0]["message"]["content"]
-        except Exception as e:
-            return f"[OpenRouter Error: {e}]"
+        return "[SYSTEM] Local inference unavailable. OpenRouter fallback is disabled during stabilization mode."
 
     # --- Main generation methods ---
 
+    async def _get_stable_model(self, requested_model: str) -> str:
+        if await self.has_model(requested_model):
+            return requested_model
+        logger.warning(f"[OLLAMA] Requested model {requested_model} missing. Attempting fallback to phi3.")
+        if await self.has_model("phi3"):
+            return "phi3"
+        return requested_model # Let it fail safely
+
     async def generate_stream(self, prompt: str, model: str = "llama3"):
-        if not await self.is_available() or not await self.has_model(model):
-            logger.info("[LLM] Ollama unavailable — routing to OpenRouter fallback")
-            async for chunk in self._openrouter_generate_stream(prompt):
-                yield chunk
+        logger.info("[OLLAMA] Inference started")
+        if not await self.is_available():
+            logger.critical("[CRITICAL][OLLAMA] Model unavailable")
+            yield "[SYSTEM] Local inference unavailable. Please ensure Ollama is running."
             return
 
+        model = await self._get_stable_model(model)
         url = f"{self.base_url}/api/generate"
         payload = {"model": model, "prompt": prompt, "stream": True}
-        logger.debug(f"[LLM] Ollama stream: model={model}")
 
         try:
-            async with self.client.stream("POST", url, json=payload) as response:
-                if response.status_code == 404:
-                    yield f"Model '{model}' not found. Run: ollama pull {model}"
-                    return
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                        if "response" in data:
-                            yield data["response"]
-                    except json.JSONDecodeError:
-                        continue
+            async with self.semaphore:
+                async with self.client.stream("POST", url, json=payload) as response:
+                    if response.status_code == 404:
+                        yield f"[ERROR] Model '{model}' not found. Run: ollama pull {model}"
+                        return
+                    response.raise_for_status()
+                    
+                    iterator = response.aiter_lines()
+                    while True:
+                        try:
+                            line = await asyncio.wait_for(iterator.__anext__(), timeout=15.0)
+                            if not line: continue
+                            data = json.loads(line)
+                            if "response" in data:
+                                yield data["response"]
+                        except StopAsyncIteration:
+                            break
+                        except json.JSONDecodeError:
+                            continue
+        except asyncio.TimeoutError:
+            logger.error("[ERROR][OLLAMA] Timeout detected")
+            yield "\n[SYSTEM] Inference timeout."
         except Exception as e:
-            logger.error(f"[LLM] Ollama stream error: {e} — attempting OpenRouter")
-            async for chunk in self._openrouter_generate_stream(prompt):
-                yield chunk
+            logger.error(f"[ERROR][OLLAMA] Inference failed: {e}")
+            yield f"\n[SYSTEM] Inference failed: {e}"
+        finally:
+            logger.info("[OLLAMA] Inference completed")
 
     async def generate(self, prompt: str, model: str = "llama3") -> str:
-        if not await self.is_available() or not await self.has_model(model):
-            logger.info("[LLM] Ollama unavailable — routing to OpenRouter fallback")
-            return await self._openrouter_generate(prompt)
+        logger.info("[OLLAMA] Inference started")
+        if not await self.is_available():
+            logger.critical("[CRITICAL][OLLAMA] Model unavailable")
+            return "[SYSTEM] Local inference unavailable. Please ensure Ollama is running."
 
+        model = await self._get_stable_model(model)
         url = f"{self.base_url}/api/generate"
         payload = {"model": model, "prompt": prompt, "stream": False}
+        
         try:
-            res = await self.client.post(url, json=payload)
-            res.raise_for_status()
-            return res.json().get("response", "")
+            async with self.semaphore:
+                res = await asyncio.wait_for(self.client.post(url, json=payload), timeout=self.timeout)
+                res.raise_for_status()
+                return res.json().get("response", "")
+        except asyncio.TimeoutError:
+            logger.error("[ERROR][OLLAMA] Timeout detected")
+            return "[SYSTEM] Inference timeout."
         except Exception as e:
-            logger.warning(f"[LLM] Ollama generate failed: {e} — trying OpenRouter")
-            return await self._openrouter_generate(prompt)
+            logger.error(f"[ERROR][OLLAMA] Inference failed: {e}")
+            return f"[SYSTEM] Inference failed: {e}"
+        finally:
+            logger.info("[OLLAMA] Inference completed")
 
     def get_llm_info(self) -> dict:
         """Return current LLM configuration for monitoring."""

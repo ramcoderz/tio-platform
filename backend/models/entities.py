@@ -13,6 +13,7 @@ class Chatbot(Base):
     domain: Mapped[str | None] = mapped_column(String(100), nullable=True)
     behavior_profile: Mapped[str | None] = mapped_column(String(100), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="pending")  # pending, ingesting, ready, error
+    status_json: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
     config: Mapped[dict] = mapped_column(JSON, default=dict)
     # Website understanding layer — generated during ingestion
     site_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
@@ -127,3 +128,22 @@ class ConversationGoal(Base):
     from sqlalchemy import UniqueConstraint
     __table_args__ = (UniqueConstraint("session_id", "chatbot_id", name="uq_session_goal"),)
 
+
+class IngestionJob(Base):
+    __tablename__ = "ingestion_jobs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chatbot_id: Mapped[int] = mapped_column(ForeignKey("chatbots.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(50), default="pending")  # pending, ingesting, ready, error
+    current_stage: Mapped[str] = mapped_column(String(50), default="queued")
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    total_chunks: Mapped[int] = mapped_column(Integer, default=0)
+    indexed_chunks: Mapped[int] = mapped_column(Integer, default=0)
+    failed_chunks: Mapped[int] = mapped_column(Integer, default=0)
+    
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
+    # Task metadata
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

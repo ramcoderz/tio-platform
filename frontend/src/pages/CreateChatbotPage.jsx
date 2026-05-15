@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Globe, Upload, ArrowRight, Loader2, CheckCircle2, FileText, X } from 'lucide-react';
 import { api } from '../api';
+import { config } from '../config';
 
 const STAGES = ['Crawling', 'Extracting', 'Indexing', 'Ready'];
 
@@ -18,32 +19,129 @@ export default function CreateChatbotPage() {
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState('idle'); // idle | creating | ingesting | ready | error
   const [stage, setStage] = useState(0);
+  const [backendMessage, setBackendMessage] = useState('Initializing...');
+  const [progress, setProgress] = useState(0);
+  const [counts, setCounts] = useState({ total: 0, current: 0 });
   const [error, setError] = useState('');
 
-  // Poll chatbot status during ingestion
+  // WebSocket real-time updates
   useEffect(() => {
     if (!chatbotId || status === 'ready' || status === 'error') return;
 
+    let socket = null;
+    let retryCount = 0;
+    const MAX_RETRIES = 5;
+
+    const connectWS = () => {
+      const sessionId = Math.random().toString(36).substring(7);
+      const token = localStorage.getItem('token');
+      
+      const wsUrl = `${config.wsBase}/ws/chat/${sessionId}${token ? `?token=${token}` : ''}`;
+      socket = new WebSocket(wsUrl);
+
+      socket.onopen = () => {
+        console.log('[WS] Connected for ingestion tracking');
+        socket.send(JSON.stringify({ chatbot_id: chatbotId }));
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'ingestion_event' && msg.chatbot_id === chatbotId) {
+            const { event: evType, data } = msg;
+            if (evType === 'progress' || evType === 'complete') {
+              const stageMap = { 'discovery': 0, 'crawling': 0, 'extraction': 1, 'extracting': 1, 'chunking': 1, 'embedding': 2, 'indexing': 2, 'finalizing': 2, 'ready': 3, 'complete': 3 };
+              setStage(stageMap[data.stage] ?? 0);
+              
+              const displayMessage = data.eta && data.eta !== 'calculating...' 
+                ? `${data.message} (${data.eta})` 
+                : data.message;
+                
+              setBackendMessage(displayMessage || 'Processing...');
+              setProgress(data.progress || 0);
+              setCounts({ 
+                total: data.total_chunks || 0, 
+                current: data.embeddings_completed || 0,
+                pages: data.pages_crawled || 0,
+                totalPages: data.total_pages || 0
+              });
+              
+              if (data.stage === 'ready' || data.stage === 'complete') {
+                setStatus('ready');
+                setTimeout(() => navigate(`/chat/${chatbotId}`), 2500);
+              }
+            } else if (evType === 'failure') {
+              setStatus('error');
+              setError(`Ingestion Failed: ${data.message}`);
+            }
+          }
+        } catch (err) {
+          console.error('[WS] Message parse error:', err);
+        }
+      };
+
+      socket.onclose = () => {
+        if (status === 'ingesting' && retryCount < MAX_RETRIES) {
+          retryCount++;
+          setTimeout(connectWS, 2000);
+        }
+      };
+    };
+
+    connectWS();
+    return () => socket?.close();
+  }, [chatbotId, status, navigate]);
+
+  // Poll chatbot status during ingestion (Fallback)
+  useEffect(() => {
+    if (!chatbotId || status === 'ready' || status === 'error') return;
+
+    const startTime = Date.now();
+    const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
     const interval = setInterval(async () => {
+      // 0. Safety Timeout
+      if (Date.now() - startTime > TIMEOUT_MS) {
+        setStatus('error');
+        setError('Ingestion timed out after 10 minutes. Please check your network or try again.');
+        clearInterval(interval);
+        return;
+      }
+
       try {
         const cb = await api(`/chatbots/${chatbotId}`);
-        if (cb.status === 'ingesting') {
-          setStatus('ingesting');
-          setStage(prev => Math.min(prev + 1, 2)); // progress through stages
-        } else if (cb.status === 'ready') {
-          setStatus('ready');
-          setStage(3);
-          clearInterval(interval);
-          // Auto-redirect after 1.5s
-          setTimeout(() => navigate(`/chat?chatbot_id=${chatbotId}`), 1500);
-        } else if (cb.status === 'error') {
+        // Support both direct status_json and nested latest_job
+        const job = cb.latest_job || {};
+        const statusJson = job.status_json || cb.status_json || {};
+        const currentStatus = job.status || cb.status;
+        
+        // Only update if not already set by WebSocket (avoid jumping)
+        if (currentStatus === 'ready' || currentStatus === 'complete') {
+          if (status !== 'ready') {
+            setStatus('ready');
+            setStage(3);
+            setProgress(100);
+            setBackendMessage('Ready');
+            clearInterval(interval);
+            setTimeout(() => navigate(`/chat/${chatbotId}`), 2500);
+          }
+        } else if (currentStatus === 'error' || statusJson.error) {
           setStatus('error');
-          const exactReason = cb.error_message || 'Unknown backend error';
+          const exactReason = job.error_message || cb.error_message || statusJson.message || 'Unknown backend error';
           setError(`Ingestion Failed: ${exactReason}. Please verify the URL or try uploading files manually.`);
           clearInterval(interval);
+        } else if (currentStatus === 'ingesting' || currentStatus === 'pending') {
+          // Polling update (low priority compared to WS)
+          const stageMap = { 'discovery': 0, 'crawling': 0, 'extraction': 1, 'extracting': 1, 'chunking': 1, 'indexing': 2, 'finalizing': 2, 'ready': 3, 'complete': 3, 'error': 0, 'failed': 0 };
+          const backendStage = job.current_stage || statusJson.stage || 'discovery';
+          setStage(stageMap[backendStage] ?? 0);
+          setBackendMessage(statusJson.message || job.current_stage || 'Processing...');
+          setProgress(job.progress || statusJson.progress || 0);
         }
-      } catch { /* silent */ }
-    }, 2000);
+      } catch (err) {
+        console.warn('[POLL] Error polling chatbot status:', err);
+      }
+    }, 5000); // 5 seconds - even less aggressive fallback
 
     return () => clearInterval(interval);
   }, [chatbotId, status, navigate]);
@@ -74,7 +172,7 @@ export default function CreateChatbotPage() {
       const formData = new FormData();
       formData.append('file', file);
       try {
-        await fetch(`/api/chatbots/${chatbotId}/upload`, {
+        await fetch(`${config.apiBase}/api/chatbots/${chatbotId}/upload`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
           body: formData
@@ -139,16 +237,23 @@ export default function CreateChatbotPage() {
           {/* Progress */}
           <div className="glass-panel" style={{ padding: '28px', marginBottom: '20px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-              <p style={{ fontSize: '14px', fontWeight: 700 }}>
-                {status === 'ready' ? '✓ Chatbot Ready!' : status === 'error' ? '✕ Ingestion Failed' : 'Processing Website...'}
-              </p>
+              <div>
+                <p style={{ fontSize: '14px', fontWeight: 700 }}>
+                  {status === 'ready' ? '✓ Chatbot Ready!' : status === 'error' ? '✕ Ingestion Failed' : backendMessage}
+                </p>
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                  {counts.totalPages > 0 && `Pages: ${counts.pages}/${counts.totalPages} · `}
+                  {counts.total > 0 && `Chunks: ${counts.current}/${counts.total}`}
+                  {counts.total === 0 && counts.totalPages === 0 && 'Analyzing site structure...'}
+                </p>
+              </div>
               <span className={`badge ${status === 'ready' ? 'badge-green' : status === 'error' ? 'badge-red' : 'badge-amber badge-pulse'}`}>
                 {status === 'ready' ? 'Complete' : status === 'error' ? 'Error' : STAGES[stage]}
               </span>
             </div>
 
             <div className="progress-bar">
-              <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
+              <div className="progress-fill" style={{ width: `${progress}%` }} />
             </div>
 
             <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '16px' }}>

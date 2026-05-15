@@ -14,7 +14,7 @@ from backend.utils.entities import extract_entities
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-async def build_site_profile(all_text: str, domain: str, site_url: str) -> Dict[str, Any]:
+async def build_site_profile(all_text: str, domain: str, site_url: str, existing_entities: List[str] = None) -> Dict[str, Any]:
     """
     Generate a persistent intelligence profile for a website.
     Analyzes all_text (combined crawled content) to extract core metadata.
@@ -41,7 +41,11 @@ async def build_site_profile(all_text: str, domain: str, site_url: str) -> Dict[
         summary = f"A website focused on {domain} located at {site_url}."
 
     # 2. Extract Top Entities
-    entities = extract_entities(all_text)
+    if existing_entities:
+        entities = existing_entities
+    else:
+        entities = extract_entities(all_text)
+        
     # Keep top 15 most frequent/relevant entities
     top_entities = [e for e, _ in Counter(entities).most_common(15)]
 

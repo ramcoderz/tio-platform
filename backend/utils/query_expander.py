@@ -1,9 +1,9 @@
-"""
+﻿"""
 Query Expansion — expands short user queries into richer retrieval queries.
 
 Strategy:
   1. Domain-specific synonym/concept expansion
-  2. Query normalization (vague → concrete)
+  2. Query normalization (vague -> concrete)
   3. Returns an expanded query string for retrieval ONLY (not shown to user)
 """
 
@@ -114,7 +114,8 @@ def expand_query(query: str, domain: Optional[str] = None) -> str:
         unique_extras = list(dict.fromkeys(t for t in extra_terms if t.lower() not in q))
         if unique_extras:
             expanded = q + " " + " ".join(unique_extras[:6])
-            logger.debug(f"[EXPAND] '{query}' → '{expanded}'")
+            logger.debug(f"[EXPAND] '{query}' -> '{expanded}'")
             return expanded
 
     return q
+

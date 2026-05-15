@@ -42,9 +42,9 @@ async def lifespan(_: FastAPI):
         Path(settings.chroma_dir).mkdir(parents=True, exist_ok=True)
         logger.info(f"Directories verified: {settings.upload_dir}, {settings.chroma_dir}")
         from backend.db.migrate import migrate_db
-        migrate_db()
+        await asyncio.to_thread(migrate_db)
         await init_db()
-        logger.info("Database initialized successfully.")
+        logger.info("Database migration and initialization successful.")
         
         # Seed starter chatbots
         from backend.db.seed import seed_chatbots
@@ -56,10 +56,33 @@ async def lifespan(_: FastAPI):
         await asyncio.to_thread(initialize_vectorstore)
         logger.info("Vector store initialized.")
         
+        # Preload models
+        from backend.rag.embeddings import preload_models
+        await asyncio.to_thread(preload_models)
+        
         # Start background tasks
         from backend.tasks.refresh_scheduler import start_refresh_scheduler
+        from backend.ingestion.worker import ingestion_worker
+        await ingestion_worker.start()
+        
         asyncio.create_task(auto_cleanup_worker())
         asyncio.create_task(start_refresh_scheduler())
+        
+        # System health logging task
+        async def _health_logger():
+            while True:
+                await asyncio.sleep(60)
+                try:
+                    from backend.llm.ollama_client import ollama_client
+                    sem = ollama_client.semaphore
+                    active_llm = getattr(settings, 'max_concurrent_llm_requests', 2) - sem._value
+                    from backend.api.websocket_manager import manager
+                    active_ws = sum(len(conns) for conns in manager.active_connections.values())
+                    logger.info(f"[HEALTH] Runtime stable. Active WS: {active_ws} | Active LLM reqs: {active_llm}/{getattr(settings, 'max_concurrent_llm_requests', 2)}")
+                except Exception as e:
+                    logger.warning(f"[HEALTH] Logger error: {e}")
+        
+        asyncio.create_task(_health_logger())
         
         yield
     finally:
@@ -69,7 +92,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

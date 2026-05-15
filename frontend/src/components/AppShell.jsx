@@ -7,6 +7,7 @@ import {
   Sun, Moon, Menu, X, ChevronRight, Layers, Activity
 } from 'lucide-react';
 import { useAppCtx } from '../context/AppContext';
+import { api } from '../api';
 
 const NAV_ITEMS = [
   { icon: Home, label: 'Dashboard', path: '/' },
@@ -31,7 +32,6 @@ export default function AppShell({ children }) {
   useEffect(() => {
     const fetchChatbots = async () => {
       try {
-        const { api } = await import('../api');
         const data = await api('/chatbots');
         setChatbots(data || []);
       } catch (err) { /* silent */ }
@@ -41,7 +41,7 @@ export default function AppShell({ children }) {
     }
   }, [location.pathname, user]);
 
-  const isAuth = location.pathname === '/login' || location.pathname === '/register';
+  const isAuth = location.pathname === '/login' || location.pathname === '/register' || (location.pathname === '/' && !user);
   const isChat = location.pathname === '/chat';
 
   // For /chat, we use a more integrated layout, so we might want a thinner sidebar or hide it

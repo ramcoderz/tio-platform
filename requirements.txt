@@ -21,3 +21,4 @@ aiofiles
 jinja2
 email-validator
 fpdf2
+beautifulsoup4

@@ -8,6 +8,7 @@ import asyncio
 import logging
 
 logger = logging.getLogger(__name__)
+from backend.utils.console import console
 
 from backend.rag.embeddings import embed, rerank
 from backend.rag.types import RetrievedChunk
@@ -69,7 +70,7 @@ def upsert_chunks(chunks: list[dict]) -> None:
             continue
         text = c.get("text", "")
         if not isinstance(text, str) or len(text.strip()) == 0:
-            logger.error(f"[VECTORSTORE] Chunk {c.get('chunk_id')} has empty text, skipping.")
+            console.error(f"Chunk {c.get('chunk_id')} has empty text, skipping.", stage="INDEXING")
             continue
         valid_chunks.append(c)
 
@@ -111,9 +112,9 @@ def upsert_chunks(chunks: list[dict]) -> None:
                 documents=[c["text"] for c in valid_chunks],
                 metadatas=safe_metadatas,
             )
-            logger.info(f"[VECTORSTORE] Upserted {len(valid_chunks)} chunks to FAISS & ChromaDB.")
+            console.info(f"Upserted {len(valid_chunks)} chunks to FAISS & ChromaDB.", stage="INDEXING")
         except Exception as e:
-            logger.error(f"[VECTORSTORE] Insertion failed: {e}", exc_info=True)
+            console.error(f"Vector insertion failed: {e}", stage="INDEXING")
             raise
 
 def _compute_rrf(faiss_ranks: list[int], bm25_ranks: list[int], k: int = 60) -> float:
@@ -169,12 +170,16 @@ def retrieve(query: str, top_k: int | None = None, chatbot_id: int | None = None
         fused = sorted(fused, key=lambda x: x[0], reverse=True)[:limit]
         return [RetrievedChunk(r["chunk_id"], r["text"], float(s), r["document"], r["metadata"]) for s, r in fused]
 
+from backend.utils.entities import get_query_entities
+
 async def async_retrieve(
     query: str, 
     top_k: int | None = None, 
     chatbot_id: int | None = None, 
     domain: str | None = None,
-    workflow: str | None = None
+    workflow: str | None = None,
+    active_entities: list[str] | None = None,
+    user_goal: str | None = None
 ) -> list[RetrievedChunk]:
     limit = top_k or settings.top_k
     q_vec = np.asarray(embed([query])[0], dtype="float32")
@@ -209,8 +214,26 @@ async def async_retrieve(
     dense_res, sparse_res_unsorted = await asyncio.gather(dense_task, sparse_task)
     sparse_res = sorted(sparse_res_unsorted, key=lambda x: x[0], reverse=True)
     
+    # --- Query Analysis ---
+    q_lower = query.lower()
+    q_entities = get_query_entities(query)  # spaCy NER + heuristic names
+
+    # Detect profile/resume intent keywords in query
+    _PROFILE_INTENT_KEYWORDS = {
+        "resume", "cv", "curriculum", "vitae", "credentials", "experience",
+        "qualification", "qualifications", "publications", "worked", "work history",
+        "employment", "career", "profile", "biography", "bio", "education", "degree",
+        "research", "projects", "achievements", "department", "faculty",
+    }
+    is_profile_query = any(kw in q_lower for kw in _PROFILE_INTENT_KEYWORDS)
+
+    # Profile section keywords for section-aware boosting
+    _SECTION_BOOST_WORDS = {
+        "experience", "work history", "employment", "career",
+        "qualification", "publications", "research", "education", "projects",
+    }
+
     fused = []
-    q_norm = query.lower()
     for row in candidates:
         cid = row["chunk_id"]
         d_rank = next((i for i, (_, r) in enumerate(dense_res) if r["chunk_id"] == cid), None)
@@ -218,29 +241,78 @@ async def async_retrieve(
         
         score = _compute_rrf([d_rank + 1] if d_rank is not None else [], [s_rank + 1] if s_rank is not None else [])
 
-        # Entity Boosting: If query contains entities found in this chunk
-        meta = row.get("metadata", {})
-        if isinstance(meta, dict):
-            entities = meta.get("entities", [])
-            if isinstance(entities, list):
-                for ent in entities:
-                    if str(ent).lower() in q_norm:
-                        score += 0.15  # Stronger boost for entity match (Task: Entity Grounding)
+        meta = row.get("metadata", {}) or {}
+        chunk_lower = row["text"].lower()
 
-        # Priority Boosting: Homepage/High-quality pages get a boost
+        # ---- ENTITY BOOSTING ----
+        # Exact entity name match in chunk (strongest signal)
+        for ent in q_entities:
+            ent_lower = ent.lower()
+            if len(ent_lower) > 2:
+                if ent_lower in chunk_lower:
+                    score += 0.35  # Exact name match — strongest boost
+                elif any(part in chunk_lower for part in ent_lower.split() if len(part) > 3):
+                    score += 0.15  # Partial name match
+
+        # Stored entity metadata match
+        stored_entities = meta.get("entities", [])
+        if isinstance(stored_entities, list):
+            for ent in stored_entities:
+                if str(ent).lower() in q_lower:
+                    score += 0.20
+
+        # ---- PROFILE DOCUMENT PRIORITIZATION ----
+        is_profile_doc = meta.get("is_profile_doc", False)
+        source_type = meta.get("source_type", "")
+        section_title = (meta.get("section_title") or "").lower()
+
+        if is_profile_query:
+            # Boost PDF/DOCX profile documents heavily
+            if source_type in ("application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
+                score += 0.40
+            elif is_profile_doc:
+                score += 0.25
+
+            # Boost chunks from relevant profile sections
+            if section_title and any(kw in section_title for kw in _SECTION_BOOST_WORDS):
+                score += 0.30
+
+            # Penalize generic homepage / nav chunks when profile query
+            priority = meta.get("priority", 1)
+            if priority <= 1 and not is_profile_doc:
+                score -= 0.10
+
+        # ---- STANDARD PRIORITY BOOSTING ----
         priority = meta.get("priority", 1)
-        if priority > 1:
-            score += (priority - 1) * 0.05
+        if priority >= 4:   # profile priority
+            score += (priority - 3) * 0.08
+        elif priority == 3: # homepage
+            score += 0.03
+        elif priority == 2: # high-quality
+            score += 0.02
 
-        # Workflow Boosting: Boost if chunk text contains workflow keywords
+        # ---- WORKFLOW BOOSTING ----
         if workflow_tokens:
-            chunk_lower = row["text"].lower()
             for wt in workflow_tokens:
                 if len(wt) > 3 and wt in chunk_lower:
-                    score += 0.1  # Significant boost for workflow relevance
+                    score += 0.10
 
+        # ---- ACTIVE ENTITY BOOSTING ----
+        if active_entities:
+            for ent in active_entities:
+                if ent.lower() in chunk_lower:
+                    score += 0.10
 
-        if score > 0: fused.append((score, row))
+        # ---- USER GOAL ALIGNMENT ----
+        if user_goal:
+            goal_tokens = _tokenize(user_goal)
+            chunk_tokens = _tokenize(row["text"])
+            overlap = len(set(goal_tokens) & set(chunk_tokens))
+            if overlap > 1:
+                score += 0.05 * min(overlap, 3)
+
+        if score > 0:
+            fused.append((score, row))
             
     fused = sorted(fused, key=lambda x: x[0], reverse=True)[:20]
 

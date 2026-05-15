@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { MessageSquare, X, Send, Bot, Sparkles, Zap, ChevronDown, Plus } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import SkillsMenu from "./SkillsMenu";
+import { config } from "../config";
 
 // Domain-specific quick actions surfaced in the widget
 const DOMAIN_QUICK_ACTIONS = {
@@ -103,6 +104,8 @@ export default function ChatWidget({
   const [showActions, setShowActions] = useState(true);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [wsStatus, setWsStatus] = useState('disconnected');
+  const [activeThought, setActiveThought] = useState(null);
+  const [ingestionInfo, setIngestionInfo] = useState(null);
 
   const wsRef = useRef(null);
   const chatEndRef = useRef(null);
@@ -110,7 +113,8 @@ export default function ChatWidget({
   const sessionId = useRef(null);
   const reconnectRef = useRef(0);
 
-  const base = apiBase || (typeof window !== "undefined" ? window.location.origin : "http://localhost:8000");
+  const base = apiBase || config.apiBase;
+  const apiHost = base; // Already normalized by config or prop
   const quickActions = DOMAIN_QUICK_ACTIONS[domain] || DOMAIN_QUICK_ACTIONS.general;
 
   // 1. SERIALIZED INITIALIZATION
@@ -126,7 +130,26 @@ export default function ChatWidget({
       sessionId.current = newId;
       localStorage.setItem(`tio_widget_session_${chatbotId}`, newId);
     }
-  }, [chatbotId]);
+
+    // 3. Polling for Ingestion Status
+    let pollInterval;
+    const fetchStatus = async () => {
+      try {
+        const res = await fetch(`${apiHost}/api/chatbots/${chatbotId}`);
+        const data = await res.json();
+        if (data.status === 'ready') {
+          setIngestionInfo(null);
+          clearInterval(pollInterval);
+        } else {
+          setIngestionInfo(data.status_json || { stage: data.status, message: 'Processing...' });
+        }
+      } catch (e) { /* ignore */ }
+    };
+
+    fetchStatus();
+    pollInterval = setInterval(fetchStatus, 3000);
+    return () => clearInterval(pollInterval);
+  }, [chatbotId, base]);
 
   // 2. PROTECTED WEBSOCKET CONNECTION
   const connectWS = useCallback(() => {
@@ -136,7 +159,7 @@ export default function ChatWidget({
     if (wsStatus === 'connected' || wsStatus === 'connecting') return;
 
     setWsStatus('connecting');
-    const wsBase = base.replace(/^http/, "ws");
+    const wsBase = config.wsBase;
     const token = typeof localStorage !== "undefined" ? (localStorage.getItem("token") || "") : "";
 
     if (wsRef.current) {
@@ -166,8 +189,11 @@ export default function ChatWidget({
               return [...prev, { role: "assistant", content: data.content, _streaming: true }];
             });
             if (!isOpen) setUnread(u => u + 1);
+          } else if (data.type === "thought") {
+            setActiveThought(data.content);
           } else if (data.type === "final") {
             setIsStreaming(false);
+            setActiveThought(null);
             setMessages(prev => {
               const last = prev[prev.length - 1];
               if (last?.role === "assistant") {
@@ -229,7 +255,7 @@ export default function ChatWidget({
       }));
     } else {
       // HTTP fallback
-      fetch(`${base}/api/chat`, {
+      fetch(`${apiHost}/api/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -269,7 +295,7 @@ export default function ChatWidget({
     setMessages(prev => [...prev, { role: "assistant", content: `🚀 Running ${skillId.replace(/_/g, ' ')}...`, _isSkill: true }]);
     
     try {
-      const response = await fetch(`${base}/api/skills/execute`, {
+      const response = await fetch(`${apiHost}/api/skills/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -379,6 +405,30 @@ export default function ChatWidget({
                 </button>
               </div>
 
+              {/* Ingestion Status Bar */}
+              {ingestionInfo && (
+                <div style={{
+                  padding: "6px 12px",
+                  background: "rgba(0, 198, 255, 0.15)",
+                  borderBottom: "1px solid rgba(0, 198, 255, 0.2)",
+                  display: "flex", alignItems: "center", gap: "8px",
+                }}>
+                  <div style={{
+                    width: "10px", height: "10px", borderRadius: "50%",
+                    background: "#00C6FF", animation: "widgetPulse 1.5s infinite"
+                  }} />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: "10px", fontWeight: 700, color: "#00C6FF", textTransform: "uppercase" }}>
+                      Pipeline: {ingestionInfo.stage}
+                    </div>
+                    <div style={{ fontSize: "11px", color: "rgba(255,255,255,0.8)" }}>
+                      {ingestionInfo.message} {ingestionInfo.eta && ingestionInfo.eta !== 'calculating...' && `(${ingestionInfo.eta})`}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: "10px", fontWeight: 700, color: "#00C6FF" }}>{ingestionInfo.progress}%</div>
+                </div>
+              )}
+
               {/* Messages */}
               <div
                 className="custom-scrollbar"
@@ -444,6 +494,25 @@ export default function ChatWidget({
                     </div>
                     <TypingDots />
                   </div>
+                )}
+
+                {/* Pipeline Thought Observer */}
+                {activeThought && (
+                  <motion.div
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    style={{
+                      display: "flex", alignItems: "center", gap: "10px",
+                      marginBottom: "16px", padding: "8px 12px",
+                      background: "rgba(255,255,255,0.03)",
+                      borderRadius: "10px", borderLeft: "2px solid #00C6FF",
+                    }}
+                  >
+                    <Zap size={14} color="#00C6FF" />
+                    <span style={{ fontSize: "11px", color: "rgba(255,255,255,0.5)", fontStyle: "italic" }}>
+                      {activeThought}
+                    </span>
+                  </motion.div>
                 )}
 
                 <div ref={chatEndRef} />

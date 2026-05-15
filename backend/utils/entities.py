@@ -85,11 +85,67 @@ def extract_entities(text: str) -> List[str]:
 
     return final_results[:50]
 
+def extract_entities_batch(texts: List[str]) -> List[List[str]]:
+    """
+    Extract entities for a batch of strings efficiently using nlp.pipe.
+    """
+    if not texts: return []
+    
+    nlp = _get_nlp()
+    if not nlp:
+        # Fallback to individual heuristic extraction if spaCy is missing
+        return [extract_entities(t) for t in texts]
+
+    results = []
+    try:
+        # Using nlp.pipe for efficiency
+        for doc in nlp.pipe(texts, batch_size=16):
+            doc_entities = []
+            seen = set()
+            
+            # NER matches
+            for ent in doc.ents:
+                if ent.label_ in {"ORG", "PERSON", "GPE", "FAC", "PRODUCT", "WORK_OF_ART", "EVENT"}:
+                    text = ent.text.strip()
+                    if text not in seen and text not in _ENTITY_NOISE and len(text) >= 3:
+                        doc_entities.append(text)
+                        seen.add(text)
+            
+            # Plus heuristics (simplified for speed in batch)
+            found = re.findall(r'\b[A-Z]{2,6}\b', doc.text) # Acronyms
+            for e in found:
+                if e not in seen and e not in _ENTITY_NOISE:
+                    doc_entities.append(e)
+                    seen.add(e)
+            
+            results.append(doc_entities[:30])
+    except Exception as e:
+        logger.warning(f"[ENTITIES] Batch extraction error: {e}")
+        return [extract_entities(t) for t in texts]
+
+    return results
+
 def get_query_entities(query: str) -> List[str]:
     """Specific entity extraction for short user queries."""
-    # For short queries, heuristics are often safer than NER models
+    results = []
+    
+    # 1. Primary: spaCy NER
+    nlp = _get_nlp()
+    if nlp:
+        try:
+            doc = nlp(query)
+            for ent in doc.ents:
+                if ent.label_ in {"PERSON", "ORG", "FAC", "GPE", "PRODUCT", "WORK_OF_ART"}:
+                    results.append(ent.text.strip())
+        except Exception as e:
+            logger.warning(f"[ENTITIES] query spaCy extraction error: {e}")
+
+    # 2. Fallback / Enrichment: Heuristics
     found = re.findall(r'\b[A-Z][a-z]+\b', query)
-    # Also look for acronyms
     found += re.findall(r'\b[A-Z]{2,6}\b', query)
     
-    return [f for f in found if f not in _ENTITY_NOISE and len(f) > 2]
+    for f in found:
+        if f not in _ENTITY_NOISE and len(f) > 2 and f not in results:
+            results.append(f)
+            
+    return results

@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 from pydantic import BaseModel
 
 
@@ -261,7 +261,7 @@ DOMAIN: Developer / SaaS - API docs, SDKs, integration guides, technical platfor
 RESPONSE STYLE:
 - Be concise and precise. No marketing fluff.
 - Always provide working code examples when the query involves implementation.
-- Structure responses as: Overview → Code Snippet → Notes/Caveats.
+- Structure responses as: Overview -> Code Snippet -> Notes/Caveats.
 - Highlight authentication requirements, rate limits, and error codes from the docs.
 - If asked a vague integration question, assume the most common use case and implement it.
 
@@ -330,3 +330,4 @@ def get_profile(name: str | None) -> BehaviorProfile:
         if key in PROFILES:
             return PROFILES[key]
     return PROFILES["general"]
+

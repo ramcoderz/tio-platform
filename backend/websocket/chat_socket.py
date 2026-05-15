@@ -23,6 +23,7 @@ import json
 import logging
 
 logger = logging.getLogger(__name__)
+from backend.utils.console import console
 settings = get_settings()
 
 websocket_router = APIRouter()
@@ -47,6 +48,7 @@ async def chat_socket(
     token: str | None = Query(default=None),
 ):
     await websocket.accept()
+    console.info(f"Websocket connected: {session_id}")
 
     # In-memory state for this socket connection
     history: list[dict] = []
@@ -72,6 +74,7 @@ async def chat_socket(
 
             # Security: block prompt injection attempts
             if "[SECURITY ALERT]" in message:
+                console.critical(f"Security Alert: Blocked prompt injection attempt from {session_id}")
                 await websocket.send_json({"type": "error", "content": "Message rejected for security reasons."})
                 continue
 
@@ -87,11 +90,20 @@ async def chat_socket(
                     })
                     continue
                 locked_chatbot_id = incoming_chatbot_id
-                logger.info(f"[WS] Session={session_id} locked to chatbot_id={locked_chatbot_id}")
+                # Register with manager
+                from backend.api.websocket_manager import manager
+                # Note: manager.connect usually calls accept(), but we already did it
+                if locked_chatbot_id not in manager.active_connections:
+                    manager.active_connections[locked_chatbot_id] = set()
+                manager.active_connections[locked_chatbot_id].add(websocket)
+                
+                console.info(f"Session locked to chatbot_id={locked_chatbot_id}", stage="WS")
             elif incoming_chatbot_id and incoming_chatbot_id != locked_chatbot_id:
-                logger.warning(
-                    f"[SECURITY] chatbot_id switch attempt blocked. "
-                    f"session={session_id} locked={locked_chatbot_id} attempted={incoming_chatbot_id}"
+                console.critical(
+                    f"Cross-session contamination attempt blocked!\n"
+                    f"       Session: {session_id}\n"
+                    f"       Locked to: {locked_chatbot_id}\n"
+                    f"       Attempted: {incoming_chatbot_id}"
                 )
                 await websocket.send_json({
                     "type": "error",
@@ -157,6 +169,9 @@ async def chat_socket(
                             full_answer += content
                             await websocket.send_json({"type": "token", "content": content})
 
+                        elif ctype == "thought":
+                            await websocket.send_json(chunk_data)
+
                         elif ctype == "error":
                             await websocket.send_json(chunk_data)
                             break
@@ -182,10 +197,16 @@ async def chat_socket(
             })
 
     except WebSocketDisconnect:
-        logger.info(f"[WS] Disconnected: session={session_id}")
+        console.warning(f"Websocket disconnected: {session_id}")
+        if locked_chatbot_id:
+            from backend.api.websocket_manager import manager
+            manager.disconnect(websocket, locked_chatbot_id)
         # Clean up in-memory goal state on disconnect
         clear_goal(session_id, locked_chatbot_id)
 
     except Exception as e:
         logger.error(f"[WS] Unhandled error session={session_id}: {e}", exc_info=True)
+        if locked_chatbot_id:
+            from backend.api.websocket_manager import manager
+            manager.disconnect(websocket, locked_chatbot_id)
         clear_goal(session_id, locked_chatbot_id)

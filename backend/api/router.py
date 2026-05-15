@@ -18,7 +18,7 @@ import httpx
 from backend.db.session import get_db
 from backend.models.entities import (
     Chatbot, UploadedDocument, Conversation, Message,
-    EmbeddingMetadata, SessionMemory, User
+    EmbeddingMetadata, SessionMemory, User, IngestionJob
 )
 from backend.api.auth import get_current_user
 from backend.memory.service import (
@@ -93,7 +93,8 @@ async def create_chatbot(
     await db.refresh(chatbot)
 
     if payload.website_url:
-        asyncio.create_task(ingest_website(chatbot.id, payload.website_url))
+        from backend.ingestion.worker import ingestion_worker
+        await ingestion_worker.submit_job(chatbot.id)
 
     return chatbot
 
@@ -113,12 +114,44 @@ async def get_chatbot(chatbot_id: int, db: AsyncSession = Depends(get_db)):
     chatbot = await db.get(Chatbot, chatbot_id)
     if not chatbot:
         raise HTTPException(status_code=404, detail="Chatbot not found")
-    return chatbot
+    
+    # Enrich with latest job status if available
+    stmt = select(IngestionJob).where(IngestionJob.chatbot_id == chatbot_id).order_by(IngestionJob.created_at.desc())
+    latest_job = (await db.execute(stmt)).scalars().first()
+    
+    # Convert to dict to add extra fields
+    res = {
+        "id": chatbot.id,
+        "name": chatbot.name,
+        "website_url": chatbot.website_url,
+        "domain": chatbot.domain,
+        "status": chatbot.status,
+        "status_json": chatbot.status_json,
+        "site_profile": chatbot.site_profile,
+        "error_message": chatbot.error_message,
+        "latest_job": latest_job if latest_job else None
+    }
+    return res
+
+
+@api_router.get("/ingestion-jobs/{job_id}")
+async def get_ingestion_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    job = await db.get(IngestionJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
 
 
 @api_router.delete("/chatbots/{chatbot_id}")
-async def delete_chatbot(chatbot_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_chatbot(
+    chatbot_id: int, 
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user)
+):
     from backend.utils.cleanup import deep_delete_chatbot
+    chatbot = await db.get(Chatbot, chatbot_id)
+    if not chatbot or chatbot.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Chatbot not found or access denied")
     await deep_delete_chatbot(chatbot_id, db)
     return {"status": "deleted", "chatbot_id": chatbot_id}
 
@@ -275,7 +308,8 @@ async def reingest_chatbot(
     chatbot.site_profile = None   # clear old profile — will be rebuilt
     await db.commit()
 
-    background_tasks.add_task(ingest_website, chatbot_id, chatbot.website_url)
+    from backend.ingestion.worker import ingestion_worker
+    await ingestion_worker.submit_job(chatbot_id)
     return {"status": "reingestion_started"}
 
 

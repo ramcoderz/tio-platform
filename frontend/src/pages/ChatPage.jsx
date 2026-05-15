@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { useChatStore } from '../store';
 import { api } from '../api';
+import { config } from '../config';
 import SkillsMenu from '../components/SkillsMenu';
 
 const DOMAIN_SUGGESTIONS = {
@@ -93,22 +94,25 @@ export default function ChatPage() {
     // STRICT GUARDS
     if (!chatbotId || !sessionId) return;
     if (!sessionId.endsWith(`-c${chatbotId}`)) return; // Ensure sync completion
-    if (wsStatus === 'connected' || wsStatus === 'connecting') return;
+    
+    const currentStatus = useChatStore.getState().wsStatus;
+    if (currentStatus === 'connected' || currentStatus === 'connecting') return;
 
     setWsStatus('connecting');
     console.info(`[WS] Initializing connection for session=${sessionId}`);
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host === 'localhost:5173' ? 'localhost:8000' : window.location.host;
     const token = localStorage.getItem('token') || '';
+    const wsUrl = `${config.wsBase}/ws/chat/${sessionId}?token=${encodeURIComponent(token)}`;
 
     if (wsRef.current) {
+      console.log("[WS] Closing existing socket...");
       wsRef.current.close();
       wsRef.current = null;
     }
 
     try {
-      const ws = new WebSocket(`${protocol}//${host}/ws/chat/${sessionId}?token=${encodeURIComponent(token)}`);
+      console.log(`[WS] Connecting to: ${wsUrl}`);
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -155,13 +159,16 @@ export default function ChatPage() {
         }
       };
 
-      ws.onerror = () => setWsStatus('error');
+      ws.onerror = (err) => {
+        setWsStatus('error');
+        console.error("[WS] Socket error event:", err);
+      };
 
     } catch (err) {
       setWsStatus('error');
-      console.error("[WS] Critical failure", err);
+      console.error("[WS] Critical instantiation failure:", err);
     }
-  }, [sessionId, chatbotId, wsStatus, setWsStatus, setMessages]);
+  }, [sessionId, chatbotId, setWsStatus, setMessages]);
 
   useEffect(() => {
     connectWS();
@@ -358,8 +365,22 @@ export default function ChatPage() {
           </div>
         </header>
 
-        {/* Chat Area */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '40px 0' }} className="custom-scrollbar" onScroll={handleScroll}>
+        {/* Chat Area Container */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
+          {/* WebSocket Status Warning */}
+          {wsStatus !== 'connected' && (
+            <div style={{
+              position: 'absolute', top: '10px', left: '50%', transform: 'translateX(-50%)',
+              zIndex: 100, background: 'rgba(239, 68, 68, 0.9)', color: 'white',
+              padding: '6px 16px', borderRadius: '20px', fontSize: '12px', fontWeight: 600,
+              display: 'flex', alignItems: 'center', gap: '8px', boxShadow: '0 4px 12px rgba(0,0,0,0.2)'
+            }}>
+              <Activity size={14} className="animate-pulse" />
+              {wsStatus === 'connecting' ? 'Reconnecting to Neural Core...' : 'Disconnected from Intelligence Core'}
+            </div>
+          )}
+
+          <div style={{ flex: 1, overflowY: 'auto', padding: '40px 0' }} className="custom-scrollbar" onScroll={handleScroll}>
           <div style={{ maxWidth: '850px', margin: '0 auto', padding: '0 32px' }}>
             {messages.length === 0 && (
               <div style={{ textAlign: 'center', marginTop: '15vh' }} className="fade-in">
@@ -523,6 +544,7 @@ export default function ChatPage() {
             </p>
           </div>
         </div>
+      </div>
 
         {/* Sources Overlay */}
         <AnimatePresence>

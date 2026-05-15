@@ -47,7 +47,9 @@ export default function HomePage() {
     try {
       await api(`/chatbots/${id}`, { method: 'DELETE' });
       setChatbots(prev => prev.filter(c => c.id !== id));
-    } catch { /* silent */ }
+    } catch (err) {
+      alert(`Failed to delete chatbot: ${err.message || 'Unknown error'}`);
+    }
   };
 
   const statCards = [

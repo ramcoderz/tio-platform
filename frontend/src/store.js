@@ -15,6 +15,7 @@ export const useChatStore = create((set) => ({
   // Serialized session update
   syncSession: (userId, chatbotId) => {
     const id = makeSessionId(userId, chatbotId);
+    console.log(`[STORE] Syncing session: userId=${userId} chatbotId=${chatbotId} -> sessionId=${id}`);
     localStorage.setItem("tio_session_id", id);
     set({ sessionId: id, messages: [], wsStatus: 'disconnected' });
     return id;

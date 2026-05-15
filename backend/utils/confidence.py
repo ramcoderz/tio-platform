@@ -1,4 +1,4 @@
-"""
+﻿"""
 Context Confidence System — determines how confident TiO is at each layer:
 
   - retrieval_confidence: how many grounded chunks were found
@@ -6,9 +6,9 @@ Context Confidence System — determines how confident TiO is at each layer:
   - intent_confidence: how certain we are about what the user wants
 
 Logic:
-  - HIGH confidence → infer and answer directly (no clarifying questions)
-  - MEDIUM confidence → answer with hedging
-  - LOW confidence → gracefully fallback, surface related topics
+  - HIGH confidence -> infer and answer directly (no clarifying questions)
+  - MEDIUM confidence -> answer with hedging
+  - LOW confidence -> gracefully fallback, surface related topics
 """
 
 import logging
@@ -23,8 +23,8 @@ class ConfidenceReport:
     domain_confidence: float       # 0.0 – 1.0
     intent_confidence: float       # 0.0 – 1.0
     overall: float                 # weighted average
-    should_infer: bool             # True → answer directly; False → fallback / hedge
-    should_ask: bool               # True → ask a targeted clarifying question
+    should_infer: bool             # True -> answer directly; False -> fallback / hedge
+    should_ask: bool               # True -> ask a targeted clarifying question
     fallback_reason: str           # empty string if no fallback needed
 
 
@@ -67,10 +67,10 @@ def compute_domain_confidence(domain: str, detected_scores: list | None = None) 
         if top == 0:
             return 0.3
         gap = (top - second) / (top + 1e-9)
-        confidence = 0.5 + (gap * 0.5)  # gap 0→50%, gap 1→100%
+        confidence = 0.5 + (gap * 0.5)  # gap 0->50%, gap 1->100%
         return round(min(confidence, 1.0), 3)
 
-    return 0.7  # domain set explicitly → reasonable confidence
+    return 0.7  # domain set explicitly -> reasonable confidence
 
 
 def compute_intent_confidence(intent: str, keyword_score: int, semantic_score: float) -> float:
@@ -156,3 +156,4 @@ def build_fallback_message(report: ConfidenceReport, domain: str) -> str:
         f"I wasn't able to find specific information on that — {reason}. "
         f"I can help you with {hint}. What would you like to know?"
     )
+

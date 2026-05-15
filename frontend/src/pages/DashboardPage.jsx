@@ -41,13 +41,20 @@ export default function DashboardPage() {
     load();
   }, []);
 
+  const [deleteError, setDeleteError] = useState(null);
+
   const handleDelete = async (e, id) => {
     e.stopPropagation();
     if (!confirm('Delete this intelligence core? This action cannot be undone.')) return;
+    setDeleteError(null);
     try {
       await api(`/chatbots/${id}`, { method: 'DELETE' });
       setChatbots(prev => prev.filter(c => c.id !== id));
-    } catch { /* silent */ }
+    } catch (err) {
+      const msg = err.message || 'Delete failed. Please try again.';
+      setDeleteError(msg);
+      alert(`Failed to delete chatbot: ${msg}`);
+    }
   };
 
   const handleReindex = async (e, id) => {

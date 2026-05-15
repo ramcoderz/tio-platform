@@ -315,7 +315,7 @@ select.input option {
 [data-theme='light'] .switch-on { background: #0072FF; }
 
 /* --- Responsive Layout Utilities --- */
-.container { maxWidth: 1200px; margin: 0 auto; padding: 0 24px; }
+.container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
 .flex-center { display: flex; align-items: center; justify-content: center; }
 .grid-cols-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 
