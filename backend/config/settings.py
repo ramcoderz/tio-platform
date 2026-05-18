@@ -21,8 +21,8 @@ class Settings(BaseSettings):
     chunk_overlap: int = 320  # ~80 tokens overlap
     llm_provider: str = "ollama"
     ollama_url: str = "http://localhost:11434"
-    ollama_model: str = "llama3.2:3b-instruct"
-    primary_model: str = "llama3.2:3b-instruct"
+    ollama_model: str = "llama3.2"
+    primary_model: str = "llama3.2"
     fallback_model: str = "phi3:mini"
     summary_model: str = "qwen2.5:7b-instruct"
     fast_model: str = "phi3:mini"
