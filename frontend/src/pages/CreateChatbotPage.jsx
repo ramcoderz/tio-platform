@@ -199,6 +199,7 @@ export default function CreateChatbotPage() {
        }
        try {
          const cb = await api(`/chatbots/${chatbotId}`);
+          window._cbPollFailures = 0;
          const job = cb.latest_job || {};
          const currentStatus = job.status || cb.status;
          if (currentStatus === 'ready' || currentStatus === 'complete') {
@@ -215,7 +216,10 @@ export default function CreateChatbotPage() {
            setProgress(job.progress || Math.round(((idx + 1) / STAGES.length) * 90));
          }
        } catch (err) {
-         console.warn('[POLL] Status check failed:', err);
+         window._cbPollFailures = (window._cbPollFailures || 0) + 1;
+          if (window._cbPollFailures >= 3) {
+            console.warn('[POLL] Status check failed persistently:', err);
+          }
        }
      }, 5000);
  
