@@ -310,6 +310,7 @@ def _sanitize_unicode(text: str) -> str:
 
 
 def _parse_file(path: Path) -> str:
+    path = Path(path)
     suffix = path.suffix.lower()
     t0 = time.monotonic()
     try:
