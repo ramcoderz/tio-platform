@@ -59,7 +59,7 @@ export default function CreateChatbotPage() {
   // Auto-scroll terminal logs
   useEffect(() => {
     if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+      terminalRef.current.scrollTo({ top: terminalRef.current.scrollHeight, behavior: 'smooth' });
     }
   }, [terminalLogs]);
 
@@ -80,8 +80,9 @@ export default function CreateChatbotPage() {
       if (wsRef.current) { wsRef.current.onclose = null; wsRef.current.close(); }
 
       console.info(`[WS-Ingestion] Connecting session=${sessionId} for chatbot=${chatbotId}`);
-      const socket = new WebSocket(wsUrl);
-      wsRef.current = socket;
+      try {
+        const socket = new WebSocket(wsUrl);
+        wsRef.current = socket;
 
       socket.onopen = () => {
         isConnecting.current = false;
@@ -169,6 +170,14 @@ export default function CreateChatbotPage() {
        };
  
        socket.onerror = () => { isConnecting.current = false; };
+      } catch (err) {
+        isConnecting.current = false;
+        console.error('[WS-Ingestion] Failed to initialize WebSocket:', err);
+        if (status === 'ingesting' && retryCount < MAX_RETRIES) {
+          retryCount++;
+          setTimeout(connectWS, 4000 * retryCount);
+        }
+      }
      };
  
      connectWS();
@@ -460,18 +469,34 @@ export default function CreateChatbotPage() {
                   gap: '4px'
                 }}
               >
-                {terminalLogs.map((log, i) => (
-                  <div key={i} style={{ display: 'flex', gap: '8px' }}>
-                    <span style={{ color: '#52525b', flexShrink: 0 }}>[{log.time}]</span>
-                    <span className={log.color || 'text-zinc-300'}>{log.text}</span>
-                  </div>
-                ))}
+                {terminalLogs.map((log, i) => {
+                  let hexColor = '#d4d4d8';
+                  if (log.color === 'text-emerald-400') hexColor = '#10b981';
+                  else if (log.color === 'text-amber-400') hexColor = '#fbbf24';
+                  else if (log.color === 'text-pink-400') hexColor = '#f472b6';
+                  else if (log.color === 'text-purple-400') hexColor = '#c084fc';
+                  else if (log.color === 'text-red-400') hexColor = '#f87171';
+                  
+                  return (
+                    <div key={i} style={{ display: 'flex', gap: '8px' }}>
+                      <span style={{ color: '#52525b', flexShrink: 0 }}>[{log.time}]</span>
+                      <span style={{ color: hexColor }}>{log.text}</span>
+                    </div>
+                  );
+                })}
                 {status !== 'ready' && status !== 'error' && (
                   <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                     <span style={{ color: '#52525b' }}>[{new Date().toLocaleTimeString()}]</span>
                     <span style={{ color: '#10b981', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <span style={{ width: '6px', height: '12px', background: '#10b981', animation: 'pulse 1s infinite' }} />
-                      Waiting for telemetry stream...
+                      <span style={{
+                        width: '6px',
+                        height: '12px',
+                        background: '#10b981',
+                        display: 'inline-block',
+                        opacity: 0.8,
+                        animation: 'pulse 1.5s infinite'
+                      }} />
+                      {terminalLogs.length === 0 ? "Waiting for telemetry stream..." : "Listening for live backend events..."}
                     </span>
                   </div>
                 )}
