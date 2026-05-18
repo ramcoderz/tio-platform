@@ -92,51 +92,57 @@ export default function CreateChatbotPage() {
       socket.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
-          if (msg.type === 'ingestion_event' && msg.chatbot_id === chatbotId) {
+          console.log("[WS RAW]", msg);
+          
+          if (msg.type === 'ingestion_event' && String(msg.chatbot_id) === String(chatbotId)) {
             const { event: evType, data } = msg;
+            const timestamp = new Date().toLocaleTimeString();
             
             // Console Ingestion Observability Logs
             console.log("%c[INGESTION] Realtime ingestion update received", "color: #3b82f6; font-weight: bold;");
             
-            const timestamp = new Date().toLocaleTimeString();
-            
+            // 1. Granular Telemetry Terminal logs
             if (evType === 'crawler_status') {
-               setTerminalLogs(prev => [...prev, { time: timestamp, text: `[CRAWLER] ${data.stage} ${data.document || ''}`, color: 'text-emerald-400' }]);
+               if (data.type === 'document_detected' || data.document) {
+                 setTerminalLogs(prev => [...prev, { time: timestamp, text: `[DOCUMENT] ${data.document || 'Document'} detected`, color: 'text-purple-400' }]);
+               } else {
+                 setTerminalLogs(prev => [...prev, { time: timestamp, text: `[CRAWLER] ${data.stage || 'Crawling...'}`, color: 'text-emerald-400' }]);
+               }
+            } else if (evType === 'crawl_progress') {
+               setTerminalLogs(prev => [...prev, { time: timestamp, text: `[CRAWLER] Fetching: ${data.url || ''} (${data.pages_crawled}/${data.pages_total})`, color: 'text-emerald-400' }]);
+            } else if (evType === 'parser_progress') {
+               setTerminalLogs(prev => [...prev, { time: timestamp, text: `[PARSER] Extracted: ${data.document || ''}`, color: 'text-purple-400' }]);
             } else if (evType === 'document_detected') {
                setTerminalLogs(prev => [...prev, { time: timestamp, text: `[DOCUMENT] ${data.document} detected`, color: 'text-purple-400' }]);
             } else if (evType === 'embedding_progress') {
-               setTerminalLogs(prev => [...prev, { time: timestamp, text: `[EMBEDDING] Embedding chunk ${data.chunk_num}/${data.total_chunks} [${data.model}]`, color: 'text-amber-400' }]);
+               const current = data.current || data.chunk_num || 0;
+               const total = data.total || data.total_chunks || 0;
+               setTerminalLogs(prev => [...prev, { time: timestamp, text: `[EMBEDDING] Embedded batch: ${current}/${total} chunks`, color: 'text-amber-400' }]);
             } else if (evType === 'vector_progress') {
-               setTerminalLogs(prev => [...prev, { time: timestamp, text: `[VECTORSTORE] Inserted ${data.inserted_vectors} vectors into ${data.collection}`, color: 'text-pink-400' }]);
+               setTerminalLogs(prev => [...prev, { time: timestamp, text: `[VECTORSTORE] Inserted ${data.inserted_vectors || 0} vectors into ${data.collection || 'index'}`, color: 'text-pink-400' }]);
             }
             
-            if (data.stage === 'crawling') {
-              console.log(`%c[CRAWLER] Page crawled: ${data.pages_crawled || 0}/${data.total_pages || "?"}`, "color: #10b981; font-weight: 500;");
-            } else if (data.stage === 'extracting') {
-              console.log(`%c[PARSER] PDF/DOCX parsed: ${data.pages_crawled || 0} pages crawled, assets parsed`, "color: #8b5cf6; font-weight: 500;");
-            } else if (data.stage === 'indexing') {
-              console.log(`%c[EMBEDDING] Embedding progress updated: ${data.embeddings_completed || 0}/${data.total_chunks || 0} chunks embedded`, "color: #f59e0b; font-weight: 500;");
-              console.log("%c[INDEXING] Vector update complete", "color: #ec4899; font-weight: 500;");
-            }
-
+            // 2. Main System progress logging (STAGES tracker)
             if (evType === 'progress' || evType === 'complete') {
+              const stageMsg = data.message || STAGES[STAGE_MAP[data.stage] ?? stageIdx]?.desc || 'Processing...';
               setTerminalLogs(prev => {
-                const newLog = { time: timestamp, text: `[SYSTEM] ${data.message || STAGES[STAGE_MAP[data.stage] ?? stageIdx]?.desc || 'Processing...'}`, color: 'text-zinc-300' };
+                const newLog = { time: timestamp, text: `[SYSTEM] ${stageMsg}`, color: 'text-zinc-300' };
                 if (prev.length === 0 || prev[prev.length - 1].text !== newLog.text) {
                   return [...prev, newLog];
                 }
                 return prev;
               });
+              
               const idx = STAGE_MAP[data.stage] ?? stageIdx;
               setStageIdx(idx);
-              setBackendMessage(data.message || STAGES[idx]?.desc || 'Processing...');
+              setBackendMessage(stageMsg);
               setProgress(data.progress || Math.round(((idx + 1) / STAGES.length) * 90));
               setEta(data.eta && data.eta !== 'calculating...' ? data.eta : '');
               setCounts({
                 pages: data.pages_crawled || 0,
                 totalPages: data.total_pages || 0,
-                current: data.embeddings_completed || 0,
-                total: data.total_chunks || 0,
+                current: data.embeddings_completed || data.current || 0,
+                total: data.total_chunks || data.total || 0,
               });
 
               if (data.stage === 'ready' || data.stage === 'complete') {
@@ -145,6 +151,7 @@ export default function CreateChatbotPage() {
             } else if (evType === 'failure') {
               setStatus('error');
               setError(`Ingestion Failed: ${data.message}`);
+              setTerminalLogs(prev => [...prev, { time: timestamp, text: `[FAILURE] Ingestion failed: ${data.message}`, color: 'text-red-400' }]);
             }
           }
         } catch (err) {
