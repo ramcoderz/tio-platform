@@ -424,7 +424,6 @@ class Scraper:
                     print("========================================================", flush=True)
                     print(flush=True)
                     if on_progress:
-                        import asyncio
                         asyncio.create_task(on_progress(0, 0, "", {"type": "document_detected", "stage": "Document found", "document": filename, "progress": 50}))
             else:
                 if len(discovered_pages) < limit:
@@ -496,7 +495,6 @@ class Scraper:
                                 print("========================================================", flush=True)
                                 print(flush=True)
                                 if on_progress:
-                                    import asyncio
                                     asyncio.create_task(on_progress(0, 0, "", {"type": "document_detected", "stage": "Document found", "document": filename, "progress": 50}))
                             continue
 
