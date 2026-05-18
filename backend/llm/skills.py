@@ -92,6 +92,19 @@ SKILLS_GUIDANCE = {
         "GOAL: Synthesize large amounts of data into actionable points. "
         "RULES: Use bullets. Focus on 'What you need to know' first."
     ),
+    "profile_lookup": (
+        "ACT AS: Faculty Liaison. "
+        "GOAL: Provide precise biographical and contact information for staff. "
+        "RULES: Lead with Name, Role, and Department. Only use details from profile pages or PDFs. "
+        "Cite the specific document or profile page URL used."
+    ),
+    "credential_query": (
+        "ACT AS: Profile Analyst. "
+        "GOAL: Extract and summarize professional credentials, education, and experience. "
+        "RULES: Use structured sections (Education, Work History, Publications). "
+        "Be extremely direct. If a credential is not explicitly in the PDF/profile, state it is missing. "
+        "CITE THE SECTION (e.g. 'From the Publications section:')."
+    ),
 }
 
 def get_skill_guidance(skill_id: str) -> str:

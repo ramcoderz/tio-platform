@@ -130,9 +130,10 @@ class OllamaClient:
     async def _get_stable_model(self, requested_model: str) -> str:
         if await self.has_model(requested_model):
             return requested_model
-        logger.warning(f"[OLLAMA] Requested model {requested_model} missing. Attempting fallback to phi3.")
-        if await self.has_model("phi3"):
-            return "phi3"
+        fallback = getattr(self.settings, "fallback_model", "phi3:mini")
+        logger.warning(f"[OLLAMA] Requested model {requested_model} missing. Attempting fallback to {fallback}.")
+        if await self.has_model(fallback):
+            return fallback
         return requested_model # Let it fail safely
 
     async def generate_stream(self, prompt: str, model: str = "llama3"):
@@ -144,7 +145,7 @@ class OllamaClient:
 
         model = await self._get_stable_model(model)
         url = f"{self.base_url}/api/generate"
-        payload = {"model": model, "prompt": prompt, "stream": True}
+        payload = {"model": model, "prompt": prompt, "stream": True, "keep_alive": -1}
 
         try:
             async with self.semaphore:
@@ -183,7 +184,7 @@ class OllamaClient:
 
         model = await self._get_stable_model(model)
         url = f"{self.base_url}/api/generate"
-        payload = {"model": model, "prompt": prompt, "stream": False}
+        payload = {"model": model, "prompt": prompt, "stream": False, "keep_alive": -1}
         
         try:
             async with self.semaphore:

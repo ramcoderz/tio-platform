@@ -23,15 +23,24 @@ class ContextAggregator:
         if not chunks:
             return snapshot
 
-        # 1. Extract and Deduplicate Entities
+        # 1. Extract and Deduplicate Entities from metadata or heuristic
         seen_entities = set()
+        entity_to_doc = {}
+        
         for chunk in chunks:
-            text = chunk.text if hasattr(chunk, "text") else str(chunk)
-            # Find capitalized proper nouns (basic heuristic)
-            found = re.findall(r"\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})*\b", text)
-            for ent in found:
+            meta = getattr(chunk, "metadata", {})
+            ents = meta.get("entities", [])
+            doc = getattr(chunk, "document", "Unknown")
+            
+            if not ents:
+                text = chunk.text if hasattr(chunk, "text") else str(chunk)
+                ents = re.findall(r"\b[A-Z][a-z]{2,}(?:\s+[A-Z][a-z]{2,})*\b", text)
+            
+            for ent in ents:
                 if len(ent) > 3 and ent.lower() not in ["the", "this", "that"]:
                     seen_entities.add(ent)
+                    if ent not in entity_to_doc:
+                        entity_to_doc[ent] = doc
         
         snapshot.entities = sorted(list(seen_entities))[:15]
 
@@ -44,8 +53,7 @@ class ContextAggregator:
         snapshot.related_pages = list(pages)
 
         # 3. Detect Workflows (Keyword + Domain context)
-        # We look for action-oriented sentences or lists
-        workflow_keywords = ["step", "first", "then", "finally", "how to", "process", "guide", "setup", "integrate"]
+        workflow_keywords = ["step", "first", "then", "finally", "how to", "process", "guide", "setup", "integrate", "apply", "requirements"]
         for chunk in chunks:
             text = chunk.text if hasattr(chunk, "text") else str(chunk)
             sentences = re.split(r"(?<=[.!?])\s+", text)
@@ -55,7 +63,6 @@ class ContextAggregator:
                         snapshot.workflows.append(sent.strip())
 
         # 4. Synthesize Important Facts
-        # We prioritize facts that mention the entities or query keywords
         q_words = set(query.lower().split())
         for chunk in chunks:
             text = chunk.text if hasattr(chunk, "text") else str(chunk)
@@ -67,10 +74,14 @@ class ContextAggregator:
                         snapshot.facts.append(sent.strip())
 
         # 5. Identify Contextual Relationships
-        # Use site profile hints + chunk proximity
         site_rels = site_profile.get("relationships", [])
         snapshot.relationships.extend(site_rels)
         
+        # Link entities to their documents
+        for ent, doc in entity_to_doc.items():
+            if ent in snapshot.entities:
+                snapshot.relationships.append(f"{ent} is mentioned in {doc}")
+
         # Heuristic: If two entities appear in the same sentence, they are related
         for chunk in chunks:
             text = chunk.text if hasattr(chunk, "text") else str(chunk)
@@ -83,7 +94,7 @@ class ContextAggregator:
                         snapshot.relationships.append(rel)
 
         # 6. Extract Important Actions (verbs + entities)
-        action_verbs = ["book", "apply", "register", "download", "install", "configure", "contact", "visit"]
+        action_verbs = ["book", "apply", "register", "download", "install", "configure", "contact", "visit", "work", "graduate", "publish"]
         for chunk in chunks:
             text = chunk.text if hasattr(chunk, "text") else str(chunk)
             for verb in action_verbs:
@@ -96,7 +107,7 @@ class ContextAggregator:
         # Final trimming to avoid bloat
         snapshot.facts = list(dict.fromkeys(snapshot.facts))[:10]
         snapshot.workflows = list(dict.fromkeys(snapshot.workflows))[:5]
-        snapshot.relationships = list(dict.fromkeys(snapshot.relationships))[:8]
+        snapshot.relationships = list(dict.fromkeys(snapshot.relationships))[:10]
         snapshot.important_actions = list(dict.fromkeys(snapshot.important_actions))[:6]
 
         return snapshot

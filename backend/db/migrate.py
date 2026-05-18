@@ -25,6 +25,12 @@ def migrate_db():
         else:
             logger.info("Column chatbots.user_id already exists.")
 
+        if "is_permanent" not in columns:
+            logger.info("Adding is_permanent column to chatbots table...")
+            cursor.execute("ALTER TABLE chatbots ADD COLUMN is_permanent BOOLEAN DEFAULT 0")
+        else:
+            logger.info("Column chatbots.is_permanent already exists.")
+
         if "status_json" not in columns:
             logger.info("Adding status_json column to chatbots table...")
             cursor.execute("ALTER TABLE chatbots ADD COLUMN status_json JSON")
@@ -39,6 +45,15 @@ def migrate_db():
             cursor.execute("ALTER TABLE conversations ADD COLUMN user_id INTEGER REFERENCES users(id) ON DELETE SET NULL")
         else:
             logger.info("Column conversations.user_id already exists.")
+
+        # Check if session_memory.chatbot_id exists
+        cursor.execute("PRAGMA table_info(session_memory)")
+        mem_columns = [col[1] for col in cursor.fetchall()]
+        if "chatbot_id" not in mem_columns:
+            logger.info("Adding chatbot_id column to session_memory table...")
+            cursor.execute("ALTER TABLE session_memory ADD COLUMN chatbot_id INTEGER REFERENCES chatbots(id) ON DELETE CASCADE")
+        else:
+            logger.info("Column session_memory.chatbot_id already exists.")
 
         # Create ingestion_jobs table if it doesn't exist
         cursor.execute("""

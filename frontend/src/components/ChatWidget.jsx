@@ -3,6 +3,7 @@ import { MessageSquare, X, Send, Bot, Sparkles, Zap, ChevronDown, Plus } from "l
 import { motion, AnimatePresence } from "framer-motion";
 import SkillsMenu from "./SkillsMenu";
 import { config } from "../config";
+import { api } from "../api";
 
 // Domain-specific quick actions surfaced in the widget
 const DOMAIN_QUICK_ACTIONS = {
@@ -152,28 +153,46 @@ export default function ChatWidget({
   }, [chatbotId, base]);
 
   // 2. PROTECTED WEBSOCKET CONNECTION
+  const isConnecting = useRef(false);
   const connectWS = useCallback(() => {
     // GUARDS
     if (!chatbotId || !sessionId.current) return;
     if (!sessionId.current.endsWith(`-c${chatbotId}`)) return;
-    if (wsStatus === 'connected' || wsStatus === 'connecting') return;
+    
+    if (isConnecting.current) {
+      console.log("[WS-Widget] Connection attempt in progress, blocking.");
+      return;
+    }
 
+    if (wsStatus === 'connected') return;
+
+    isConnecting.current = true;
     setWsStatus('connecting');
     const wsBase = config.wsBase;
     const token = typeof localStorage !== "undefined" ? (localStorage.getItem("token") || "") : "";
 
     if (wsRef.current) {
-      wsRef.current.close();
+      console.log("[WS-Widget] Cleaning up stale socket...");
+      wsRef.current.onopen = null;
+      wsRef.current.onmessage = null;
+      wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
+      if (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING) {
+        wsRef.current.close();
+      }
       wsRef.current = null;
     }
 
     try {
+      console.info(`[WS-Widget] Opening: ${wsBase}`);
       const ws = new WebSocket(`${wsBase}/ws/chat/${sessionId.current}?token=${encodeURIComponent(token)}`);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        isConnecting.current = false;
         setWsStatus('connected');
         reconnectRef.current = 0;
+        console.log("[WS-Widget] Socket opened");
       };
 
       ws.onmessage = (event) => {
@@ -202,27 +221,50 @@ export default function ChatWidget({
               return prev;
             });
           }
-        } catch { /* ignore */ }
-      };
-
-      ws.onclose = () => {
-        setWsStatus('disconnected');
-        reconnectRef.current++;
-        if (reconnectRef.current < 5) {
-          setTimeout(connectWS, 2000 * reconnectRef.current);
+        } catch (err) {
+          console.error("[WS-Widget] Message error:", err);
         }
       };
 
-      ws.onerror = () => setWsStatus('error');
+      ws.onclose = (e) => {
+        isConnecting.current = false;
+        setWsStatus('disconnected');
+        console.warn(`[WS-Widget] Socket closed: Code=${e.code}`);
+        
+        if (e.code !== 1000 && e.code !== 1001) {
+          reconnectRef.current++;
+          if (reconnectRef.current < 5) {
+            const delay = 2000 * reconnectRef.current;
+            console.log(`[WS-Widget] Reconnecting in ${delay}ms...`);
+            setTimeout(() => {
+              if (wsRef.current?.readyState !== WebSocket.OPEN) connectWS();
+            }, delay);
+          }
+        }
+      };
+
+      ws.onerror = (err) => {
+        isConnecting.current = false;
+        console.error("[WS-Widget] Socket error:", err);
+        setWsStatus('error');
+      };
 
     } catch (err) {
+      isConnecting.current = false;
       setWsStatus('error');
     }
   }, [base, isOpen, chatbotId, wsStatus]);
 
   useEffect(() => {
     connectWS();
-    return () => wsRef.current?.close();
+    return () => {
+      if (wsRef.current) {
+        console.info("[WS-Widget] Unmounting, cleaning up...");
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
   }, [connectWS]);
 
   // ── Auto-scroll ───────────────────────────────────────────────────────────
@@ -242,36 +284,39 @@ export default function ChatWidget({
   const sendMessage = useCallback((text) => {
     const msg = (text || input).trim();
     if (!msg || isStreaming) return;
+    
+    const isSocketOpen = wsRef.current?.readyState === WebSocket.OPEN;
+    
     setInput("");
     setShowActions(false);
     setIsStreaming(true);
     setMessages(prev => [...prev, { role: "user", content: msg }]);
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    if (isSocketOpen) {
+      console.info("[WS-Widget] Sending message via socket...");
       wsRef.current.send(JSON.stringify({
         message: msg,
         chatbot_id: chatbotId ? parseInt(chatbotId) : null,
         session_id: sessionId.current,
       }));
     } else {
-      // HTTP fallback
-      fetch(`${apiHost}/api/chat`, {
+      console.warn("[WS-Widget] Socket not open, using HTTP fallback.");
+      api("/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chatbot_id: chatbotId ? parseInt(chatbotId) : null,
           session_id: sessionId.current,
           message: msg,
-        }),
+        })
       })
-        .then(r => r.json())
         .then(data => {
           setIsStreaming(false);
-          setMessages(prev => [...prev, { role: "assistant", content: data.answer || "No response." }]);
+          setMessages(prev => [...prev, { role: "assistant", content: data.answer || "No response.", sources: data.citations }]);
         })
-        .catch(() => {
+        .catch(err => {
           setIsStreaming(false);
-          setMessages(prev => [...prev, { role: "assistant", content: "Connection lost. Please try again." }]);
+          console.error("[WS-Widget] HTTP fallback failed:", err);
+          setMessages(prev => [...prev, { role: "assistant", content: "⚠️ Delivery failed. Please check your connection." }]);
         });
     }
   }, [input, isStreaming, chatbotId, base]);

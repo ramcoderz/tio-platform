@@ -1,4 +1,4 @@
-﻿"""
+"""
 Orchestrator — the intelligence core of TiO.
 
 Contextual Prompt Orchestration Pipeline (v2):
@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from backend.llm.ollama_client import ollama_client
+from backend.llm.llm_router import llm_router
 from backend.config.settings import get_settings
 from backend.vectorstore.service import async_retrieve
 from backend.llm.profiles import get_profile
@@ -42,7 +43,9 @@ from backend.utils.domain_intelligence import domain_detector
 from backend.utils.intent_intelligence import intent_intelligence
 from backend.utils.query_expander import expand_query
 from backend.utils.goal_memory import update_goal, get_or_create_goal
-from backend.utils.confidence import build_confidence_report, build_fallback_message
+from backend.utils.confidence import (
+    build_confidence_report, build_fallback_message, ConfidenceReport
+)
 from backend.utils.site_intelligence import get_site_context_string
 from backend.memory.service import update_rolling_summary
 from backend.orchestration.prompt_orchestrator import (
@@ -53,6 +56,11 @@ from backend.synthesis.workflow_engine import WorkflowEngine
 from backend.synthesis.context_compressor import ContextCompressor
 from backend.synthesis.response_planner import ResponsePlanner
 from backend.synthesis.response_sanitizer import ResponseSanitizer
+from backend.memory.session_memory import (
+    get_session, update_entities, update_topic,
+    register_document, get_cached_retrieval, cache_retrieval,
+    get_active_entities, print_session_summary, get_session_graph
+)
 
 
 logger = logging.getLogger(__name__)
@@ -79,6 +87,10 @@ _ROBOTIC_PHRASES = [
     r"based on the (?:retrieved )?context[,.]?",
     r"based on the (?:provided )?information[,.]?",
     r"based on what i(?:'ve| have) found[,.]?",
+    r"based on (?:the )?available data[,.]?",
+    r"based on (?:the )?available information[,.]?",
+    r"according to the (?:available data|retrieved context)[,.]?",
+    r"please note(?: that)?[,.]?",
     r"could you (?:please )?clarify\??",
     r"could you (?:please )?specify\??",
     r"please (?:note that )?i cannot provide",
@@ -135,15 +147,17 @@ INTENT_PATTERNS: dict[str, list[str]] = {
     "sdk_guide":                ["install", "library", "npm", "pip", "package", "init", "import"],
     "shopping_guide":           ["product", "buy", "price", "pricing", "catalog", "compare", "best", "order"],
     "doc_summarizer":           ["summarize", "summary", "overview", "what is this", "tell me about", "highlights"],
+    "profile_lookup":           ["faculty", "professor", "staff", "hod", "principal", "dean", "bio", "contact"],
+    "credential_query":         ["resume", "cv", "experience", "worked", "background", "qualification", "publications"],
 }
 
 DOMAIN_SKILL_MAP: dict[str, list[str]] = {
     "tourism":   ["tourism_planner", "attraction_recommender", "ride_optimizer", "doc_summarizer"],
-    "education": ["course_finder", "admission_assistant", "scholarship_helper", "doc_summarizer"],
+    "education": ["course_finder", "admission_assistant", "scholarship_helper", "profile_lookup", "credential_query", "doc_summarizer"],
     "medical":   ["dept_navigator", "appointment_guidance", "insurance_assistant", "doc_summarizer"],
     "developer": ["api_assistant", "integration_helper", "sdk_guide", "doc_summarizer"],
     "ecommerce": ["shopping_guide", "doc_summarizer"],
-    "general":   ["doc_summarizer"],
+    "general":   ["profile_lookup", "credential_query", "doc_summarizer"],
 }
 
 
@@ -204,6 +218,7 @@ async def _get_context(
     workflow: str | None = None,
     active_entities: list[str] | None = None,
     user_goal: str | None = None,
+    chatbot_base_url: str = "",
 ) -> tuple[list, float]:
     t0 = time.monotonic()
     chunks = await async_retrieve(
@@ -212,7 +227,26 @@ async def _get_context(
         active_entities=active_entities,
         user_goal=user_goal
     )
+
+    was_expanded = False
+    if settings.enable_adaptive_retrieval and chatbot_id and chatbot_base_url:
+        from backend.ingestion.adaptive_retrieval import adaptive_retrieve as ar_func
+        t_adaptive_start = time.monotonic()
+        chunks, was_expanded = await ar_func(
+            query=query,
+            initial_chunks=chunks,
+            chatbot_id=chatbot_id,
+            chatbot_base_url=chatbot_base_url,
+            domain=domain or "general",
+            top_k=settings.top_k,
+        )
+        if was_expanded and settings.debug_timing:
+            print(f"[ADAPTIVE] Completed in {time.monotonic() - t_adaptive_start:.3f}s")
+
     elapsed_ms = (time.monotonic() - t0) * 1000
+
+    if settings.debug_timing:
+        print(f"[RETRIEVAL] Retrieved {len(chunks)} chunks in {elapsed_ms/1000:.3f}s")
 
     if chatbot_id:
         before = len(chunks)
@@ -288,19 +322,30 @@ def _detect_domain_with_confidence(
 def _post_process_answer(answer: str) -> tuple[str, bool]:
     had_warning = False
     
-    # Use the humanization layer
+    # 1. Robotic phrase filtering (aggressive)
+    answer = _strip_robotic_phrases(answer)
+    
+    # 2. Use the humanization layer
     answer = response_sanitizer.humanize(answer)
     
+    # 3. Sanitize output
     answer = sanitize_output(answer)
+    
+    # 4. Placeholder detection
     if _has_placeholders(answer):
         had_warning = True
         logger.warning("[ORCHESTRATOR] Bracket placeholder detected — stripping.")
         answer = _strip_placeholders(answer)
         if _has_placeholders(answer):
             answer = (
-                "The specific details for that query weren't clearly identified in the site content. "
-                "I can provide a general overview instead — what would you like to know more about?"
+                "I couldn't find the exact details you're looking for in the site content. "
+                "However, I can provide a general overview — what specific area would you like to explore?"
             )
+    
+    # 5. Final Grounding Check: If answer is too generic or says "I don't know" despite having chunks
+    if any(p in answer.lower() for p in ["i don't know", "not mentioned", "no information"]) and len(answer) < 100:
+        logger.info("[ORCHESTRATOR] LLM gave negative response despite context. Grounding may be weak.")
+
     return answer, had_warning
 
 
@@ -405,27 +450,49 @@ async def _run_pipeline(
     if expanded_query != query.lower():
         logger.debug(f"[EXPAND] '{query}' -> '{expanded_query}'")
 
-    # 6. Retrieval
-    # Load session state for workflow-aware retrieval
+    # 6. Retrieval — with Session Memory integration
     active_entities: list[str] = []
     user_goal: str | None = None
     active_workflow: str | None = None
-    
+
+    # Load session memory state
+    session_mem = None
     if session_id and effective_id:
+        session_mem = get_session(session_id, effective_id)
+        session_mem.message_count += 1
+        active_entities = get_active_entities(session_mem, top_k=5)
+
         from backend.utils.goal_memory import get_or_create_goal
         goal_obj = await get_or_create_goal(db, session_id, effective_id)
         if goal_obj:
-            active_entities = (goal_obj.state_json or {}).get("discovered_entities", [])
+            # Merge DB entities with in-memory session entities
+            db_entities = (goal_obj.state_json or {}).get("discovered_entities", [])
+            active_entities = list(dict.fromkeys(active_entities + db_entities))[:8]
             user_goal = goal_obj.current_goal
             active_workflow = goal_obj.active_workflow
 
-    chunks, retrieval_ms = await _get_context(
-        expanded_query, effective_id, 
-        domain=effective_domain,
-        workflow=active_workflow,
-        active_entities=active_entities,
-        user_goal=user_goal
-    )
+    # Check retrieval cache before hitting vectorstore
+    primary_entity = active_entities[0] if active_entities else ""
+    cached_chunks = None
+    if session_mem and primary_entity:
+        cached_chunks = get_cached_retrieval(session_mem, query, primary_entity)
+
+    if cached_chunks is not None:
+        chunks = cached_chunks
+        retrieval_ms = 0.0
+        logger.info(f"[MEMORY] Retrieval cache HIT — skipping vectorstore for entity={primary_entity!r}")
+    else:
+        chunks, retrieval_ms = await _get_context(
+            expanded_query, effective_id,
+            domain=effective_domain,
+            workflow=active_workflow,
+            active_entities=active_entities,
+            user_goal=user_goal,
+            chatbot_base_url=chatbot.website_url if chatbot else ""
+        )
+        # Cache retrieval results for repeated entity lookups
+        if session_mem and chunks and primary_entity:
+            cache_retrieval(session_mem, query, primary_entity, chunks)
 
     # 7. Confidence scoring
     from backend.utils.domain_intelligence import domain_detector as _dd
@@ -435,7 +502,7 @@ async def _run_pipeline(
         keyword_score=kw_score, semantic_score=sem_score, detected_scores=domain_scores,
     )
 
-    # 8. Goal memory + rolling summary
+    # 8. Goal memory + rolling summary + session memory update
     goal = None
     rolling_summary = ""
     if session_id and effective_id:
@@ -444,6 +511,28 @@ async def _run_pipeline(
         goal = await update_goal(db, session_id, effective_id, query, intent, domain=effective_domain)
         if conv:
             rolling_summary = await update_rolling_summary(db, conv.id)
+
+        # Update session memory with discovered entities + topic
+        if session_mem:
+            from backend.utils.entities import get_query_entities
+            q_entities = get_query_entities(query)
+            if q_entities:
+                update_entities(session_mem, q_entities, entity_type="PERSON")
+
+            # Register any docs retrieved in this pass
+            for chunk in chunks:
+                src = chunk.metadata.get("source_type", "")
+                doc_url = chunk.metadata.get("document", "")
+                if doc_url and ("pdf" in src or "docx" in src or doc_url.endswith(".pdf") or doc_url.endswith(".docx")):
+                    doc_type = "pdf" if ".pdf" in doc_url else "docx"
+                    register_document(
+                        session_mem, url=doc_url, doc_type=doc_type,
+                        title=doc_url.split("/")[-1],
+                        chunk_ids=[chunk.metadata.get("chunk_id", "")]
+                    )
+
+            topic_label = intent.replace("_", " ").title() if intent else effective_domain.title()
+            update_topic(session_mem, topic=topic_label, domain=effective_domain)
 
     # 9. Site intelligence
     site_profile: dict = {}
@@ -455,6 +544,7 @@ async def _run_pipeline(
         chunks, _ = await _get_context(
             expanded_query, effective_id,
             domain=effective_domain, workflow=goal.active_workflow,
+            chatbot_base_url=chatbot.website_url if chatbot else ""
         )
 
     # --- SYNTHESIS LAYER (New) ---
@@ -477,17 +567,43 @@ async def _run_pipeline(
         "reasoning": raw_plan.get("reasoning", ""),
         "recommendations": raw_plan.get("recommendations", [])
     }
-    logger.info(f"[ORCH DEBUG] Generated plan keys: {list(response_plan_dict.keys())}")
-
+    # 10.5 Retrieval Validation (Part 6)
+    if not chunks and not site_profile and not rolling_summary:
+        logger.warning(f"[RETRIEVAL] CRITICAL: No content found for chatbot_id={effective_id}. Query={query}")
+        # We don't raise error here, we let the pipeline continue to Tavily check
+    
     # 11. Tavily external research (if low confidence)
     tavily_results: list[dict] = []
     tavily_triggered = False
-    if not chunks or (confidence.retrieval_confidence < 0.3 and len(query.split()) > 3):
-        tavily_triggered = True
-        tavily_results = await _fetch_tavily(query, chatbot.website_url if chatbot else None)
+    
+    # Skip Tavily for permanent seeded chatbots or in DEMO_MODE to reduce latency and keep grounded to indexed files
+    is_demo = (chatbot and getattr(chatbot, "is_permanent", False)) or getattr(settings, "demo_mode", False)
+    
+    if not is_demo:
+        # Only trigger Tavily if local retrieval is truly failing AND query is substantial
+        if not chunks and len(query.split()) > 2:
+            tavily_triggered = True
+            t_tavily_start = time.monotonic()
+            tavily_results = await _fetch_tavily(query, chatbot.website_url if chatbot else None)
+            if settings.debug_timing:
+                print(f"[TAVILY] Completed in {time.monotonic() - t_tavily_start:.3f}s")
+            logger.info(
+                f"[ORCHESTRATOR] Tavily triggered (No chunks found), "
+                f"got {len(tavily_results)} results"
+            )
+        elif confidence.retrieval_confidence < 0.35 and len(query.split()) > 4:
+            tavily_triggered = True
+            t_tavily_start = time.monotonic()
+            tavily_results = await _fetch_tavily(query, chatbot.website_url if chatbot else None)
+            if settings.debug_timing:
+                print(f"[TAVILY] Completed in {time.monotonic() - t_tavily_start:.3f}s")
+            logger.info(
+                f"[ORCHESTRATOR] Tavily triggered (Low confidence={confidence.retrieval_confidence:.2f}), "
+                f"got {len(tavily_results)} results"
+            )
+    else:
         logger.info(
-            f"[ORCHESTRATOR] Tavily triggered (confidence={confidence.retrieval_confidence:.2f}), "
-            f"got {len(tavily_results)} results"
+            f"[ORCHESTRATOR] Tavily search skipped: Chatbot '{chatbot.name if chatbot else ''}' is a demo/permanent dataset."
         )
 
     # 12. LLM API tracking
@@ -590,8 +706,9 @@ async def run_orchestration(
     intent = conf["intent"]
     effective_domain = conf["domain"]
 
-    # Graceful fallback if no content at all
+    # Graceful fallback if no content at all (Part 6)
     if not orch_input.chunks and not orch_input.tavily_results and not confidence.should_infer:
+        logger.info(f"[ORCHESTRATOR] Returning 'Sufficient content' error for query={query!r}")
         fallback_msg = build_fallback_message(confidence, effective_domain)
         return {
             "answer": fallback_msg,
@@ -600,15 +717,20 @@ async def run_orchestration(
             "suggestions": bp.suggestions,
             "domain": effective_domain,
             "profile": bp.name,
-            "confidence": confidence.overall,
+            "confidence": 0.0,
         }
 
     # Build layered prompt
     orch_output = build_prompt(orch_input)
 
     # LLM generation
+    print(flush=True)
+    print("[SYNTHESIS]", flush=True)
+    print("Generating grounded response...", flush=True)
+    print(flush=True)
+    
     t0 = time.monotonic()
-    raw_answer = await ollama_client.generate(orch_output.prompt, model=settings.ollama_model)
+    raw_answer = await llm_router.generate(orch_output.prompt)
     llm_ms = (time.monotonic() - t0) * 1000
 
     # Post-process
@@ -649,8 +771,9 @@ async def run_orchestration(
         "confidence": confidence.overall,
         "goal": goal.current_goal if goal else None,
         "conversation_mode": goal.conversation_mode if goal else "exploratory",
-        "response_plan": orch_output.response_plan,
-        "tavily_used": orch_output.tavily_used,
+        "entities": orch_input.session_entities,
+        "workflow": orch_input.active_workflow,
+        "duration_s": round(llm_ms / 1000, 2),
     }
 
 
@@ -691,7 +814,7 @@ async def run_orchestration_stream(
     intent = conf["intent"]
     effective_domain = conf["domain"]
 
-    # Emit metadata immediately
+    # Emit metadata immediately for context panel
     yield {
         "type": "metadata",
         "citations": [c.__dict__ for c in orch_input.chunks],
@@ -700,6 +823,10 @@ async def run_orchestration_stream(
         "confidence": confidence.overall,
         "conversation_mode": goal.conversation_mode if goal else "exploratory",
         "goal": goal.current_goal if goal else None,
+        "entities": orch_input.session_entities,
+        "rolling_summary": orch_input.rolling_summary,
+        "workflow": orch_input.active_workflow,
+        "workflow_stage": orch_input.workflow_stage,
         "tavily_triggered": orch_input.tavily_triggered,
     }
 
@@ -718,11 +845,12 @@ async def run_orchestration_stream(
     
     yield {"type": "thought", "content": "Generating response plan based on synthesized meaning..."}
 
-    # Graceful fallback
+    # Graceful fallback (Part 6)
     if not orch_input.chunks and not orch_input.tavily_results and not confidence.should_infer:
+        logger.info(f"[ORCH STREAM] Returning 'Sufficient content' error for query={query!r}")
         fallback_msg = build_fallback_message(confidence, effective_domain)
         yield {"type": "token", "content": fallback_msg}
-        yield {"type": "final", "answer": fallback_msg, "citations": [], "confidence": confidence.overall}
+        yield {"type": "final", "answer": fallback_msg, "citations": [], "confidence": 0.0}
         return
 
     # Build layered prompt
@@ -738,13 +866,25 @@ async def run_orchestration_stream(
     yield {"type": "thought", "content": thought}
 
     # Stream generation
+    print(flush=True)
+    print("[SYNTHESIS]", flush=True)
+    print("Generating grounded response...", flush=True)
+    print(flush=True)
+    
     t0 = time.monotonic()
     full_answer = ""
-    async for token in ollama_client.generate_stream(orch_output.prompt, model=settings.ollama_model):
+    first_token_time = None
+    async for token in llm_router.generate_stream(orch_output.prompt):
+        if first_token_time is None:
+            first_token_time = time.monotonic()
+            if settings.debug_timing:
+                print(f"[LLM] First token in {first_token_time - t0:.3f}s")
         full_answer += token
         yield {"type": "token", "content": token}
 
     llm_ms = (time.monotonic() - t0) * 1000
+    if settings.debug_timing:
+        print(f"[LLM] Inference completed in {llm_ms/1000:.3f}s")
 
     # Post-process
     cleaned, had_warning = _post_process_answer(full_answer)
@@ -781,5 +921,8 @@ async def run_orchestration_stream(
         "goal": goal.current_goal if goal else None,
         "response_plan": orch_output.response_plan,
         "tavily_used": orch_output.tavily_used,
+        "entities": orch_input.session_entities,
+        "workflow": orch_input.active_workflow,
+        "duration_s": round(llm_ms / 1000, 2),
     }
 

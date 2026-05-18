@@ -1,26 +1,22 @@
 @echo off
 setlocal
 
-echo [1/4] Checking dependencies...
-if not exist "node_modules\" (
-    echo Installing frontend dependencies...
-    cd frontend && call npm install && cd ..
+echo ========================================================
+echo [SYSTEM] Starting TiO Platform Environment Setup
+echo ========================================================
+
+:: Change to script's directory
+cd /d %~dp0
+
+:: Activate Python virtual environment
+if exist venv\Scripts\activate.bat (
+    call venv\Scripts\activate.bat
+    echo [SYSTEM] Python virtual environment activated
+) else (
+    echo [ERROR] Virtual environment not found. Please run set up first.
+    pause
+    exit /b 1
 )
 
-if not exist "venv\" (
-    echo Setting up virtual environment...
-    python -m venv venv
-)
-call venv\Scripts\activate
-pip install -r requirements.txt
-
-echo.
-echo [2/4] Building frontend...
-cd frontend
-call npm run build
-cd ..
-
-echo.
-echo [3/4] Starting TiO Intelligence Core...
-python main.py
-pause
+:: Execute the elegant Python launcher script
+python launcher.py

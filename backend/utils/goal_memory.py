@@ -55,6 +55,8 @@ def infer_goal(query: str, domain: Optional[str]) -> str:
         if any(w in q for w in ["ride", "attraction"]): return "Find activities"
     elif domain == "education":
         if any(w in q for w in ["apply", "admission"]): return "Apply for admission"
+        if any(w in q for w in ["faculty", "staff", "professor", "hod", "dean"]): return "Lookup faculty profile"
+        if any(w in q for w in ["resume", "cv", "credentials", "experience"]): return "Review credentials"
     elif domain == "developer":
         if any(w in q for w in ["api", "connect"]): return "Integrate API"
     return f"Get help with: {query[:50]}"
@@ -74,6 +76,8 @@ async def get_or_create_goal(db: AsyncSession, session_id: str, chatbot_id: int)
         db.add(goal)
         await db.flush()
     return goal
+
+from backend.utils.entities import get_query_entities
 
 async def update_goal(
     db: AsyncSession, 
@@ -105,8 +109,13 @@ async def update_goal(
     state = goal.state_json or {}
     state["message_count"] = state.get("message_count", 0) + 1
     
-    # Track discovered entities (placeholder for integration with entity extractor)
-    # state["discovered_entities"] = list(set(state.get("discovered_entities", []) + extracted_entities))
+    # Track discovered entities for follow-up resolution
+    query_entities = get_query_entities(query)
+    if query_entities:
+        existing_entities = state.get("discovered_entities", [])
+        # Prepend new entities to prioritize recent ones
+        updated_entities = list(dict.fromkeys(query_entities + existing_entities))[:10]
+        state["discovered_entities"] = updated_entities
     
     goal.state_json = state
     goal.updated_at = datetime.utcnow()

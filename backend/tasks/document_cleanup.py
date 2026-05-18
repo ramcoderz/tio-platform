@@ -24,8 +24,16 @@ async def auto_cleanup_worker():
                 
                 threshold = datetime.utcnow() - timedelta(hours=retention_hours)
                 
-                # Fetch expired docs
-                stmt = select(UploadedDocument).where(UploadedDocument.created_at < threshold)
+                # Fetch expired docs from non-permanent chatbots
+                from backend.models.entities import Chatbot
+                stmt = (
+                    select(UploadedDocument)
+                    .join(Chatbot, UploadedDocument.chatbot_id == Chatbot.id)
+                    .where(
+                        UploadedDocument.created_at < threshold,
+                        Chatbot.is_permanent == 0
+                    )
+                )
                 result = await db.execute(stmt)
                 expired_docs = result.scalars().all()
                 

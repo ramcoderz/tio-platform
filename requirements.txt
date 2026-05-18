@@ -22,3 +22,5 @@ jinja2
 email-validator
 fpdf2
 beautifulsoup4
+spacy
+readability-lxml

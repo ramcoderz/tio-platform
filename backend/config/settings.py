@@ -21,7 +21,11 @@ class Settings(BaseSettings):
     chunk_overlap: int = 320  # ~80 tokens overlap
     llm_provider: str = "ollama"
     ollama_url: str = "http://localhost:11434"
-    ollama_model: str = "phi3:mini"
+    ollama_model: str = "llama3.2:3b-instruct"
+    primary_model: str = "llama3.2:3b-instruct"
+    fallback_model: str = "phi3:mini"
+    summary_model: str = "qwen2.5:7b-instruct"
+    fast_model: str = "phi3:mini"
     openrouter_model: str = "meta-llama/llama-3.1-8b-instruct"
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -40,6 +44,31 @@ class Settings(BaseSettings):
     local_inference_only: bool = True
     stabilization_mode: bool = True
     max_concurrent_llm_requests: int = 1
+    debug_timing: bool = False
+
+    # Feature Flags (Path B Stabilization)
+    enable_pdf_parsing: bool = True
+    enable_docx_parsing: bool = True
+    enable_entity_extraction: bool = True
+    enable_reranking: bool = True
+    enable_tavily: bool = True
+    enable_gemini_search: bool = False
+    enable_profile_intelligence: bool = True
+    enable_article_summarization: bool = True
+    enable_section_aware_chunking: bool = True
+
+    # Phase 12B — Adaptive Retrieval & Knowledge Expansion
+    enable_adaptive_retrieval: bool = True
+    enable_incremental_ingestion: bool = True
+    enable_dynamic_doc_discovery: bool = True
+
+    # Demo Mode — prioritise preloaded embeddings, reduce live crawl dependency
+    demo_mode: bool = False
+    demo_knowledgebases: list[str] = Field(default_factory=lambda: ["mvit", "nasa", "pondicherry_tourism", "fastapi_docs", "ollama_docs"])
+
+    # Adaptive retrieval thresholds
+    adaptive_min_chunks: int = 2          # Trigger expansion below this chunk count
+    adaptive_min_rerank_score: float = 0.5  # Trigger expansion below this avg rerank score
 
     # Security
     jwt_secret_key: str = "super-secret-key-change-this-in-production"

@@ -551,28 +551,33 @@ def build_session_memory_block(
 # ---------------------------------------------------------------------------
 
 # Absolute constraints injected at highest priority
+# Absolute constraints injected at highest priority
 _CONSTRAINTS = """\
-ABSOLUTE CONSTRAINTS (override everything above):
+ABSOLUTE CONSTRAINTS:
 - NEVER use bracket placeholders: [Name], [Place], [Details], [Institution], etc.
 - NEVER use these robotic filler phrases: "I'd be happy to help", "Based on the context", \
 "As an AI", "Certainly!", "Of course!", "Great question!", "Let me help you with that", \
 "As per the provided context", "Based on available information", "External research indicates", \
-"verified for recruitment eligibility", "I can confirm that", "According to our records".
+"verified for recruitment eligibility", "I can confirm that", "According to our records", \
+"Based on available data", "May not be exhaustive", "Confidence low", "External research triggered", \
+"Fallback triggered", "Using external search", "please let me know how I can assist".
+- NEVER mention internal system states like "confidence levels", "retrieval diagnostics", \
+"fallback reasoning", or "orchestration plans".
 - START DIRECTLY with the answer. No conversational introductions.
 - Every factual claim must be grounded in RETRIEVED CONTEXT or SITE INTELLIGENCE above.
 - NEVER fabricate names, prices, phone numbers, dates, credentials, or entities not in context.
 - FACULTY/PROFILE QUERIES: Only state work history, qualifications, publications that appear \
 EXPLICITLY in the retrieved profile documents or PDF content. If employment history is not in \
-the indexed profile, say: "No previous employment history was found in the indexed profile." \
+the indexed profile, say: "No verified information was found in indexed documents." \
 Do NOT infer, extrapolate, or fill gaps with generic academic credentials.
 - RESUME/CV QUERIES: Synthesize only from profile chunks and PDF sections. Cite the section \
 (e.g. "From the Experience section:", "From the Publications list:") so the user knows \
 where the information came from.
-- If a specific detail is missing: say so naturally: \
-"The indexed content doesn't include [detail]." Never fabricate it.
+- If a specific detail or information is missing: say clearly: \
+"No verified information was found in indexed documents." Never fabricate it.
 - If context is from EXTERNAL RESEARCH, treat it as supplementary only — never as primary \
 evidence for individual credentials.
-- Responses must feel direct, conversational, and factual — not like a template readout.\
+- Responses must feel direct, conversational, and factual — not like a template readout.
 """
 
 
@@ -617,11 +622,38 @@ def build_prompt(inp: OrchestrationInput) -> OrchestrationOutput:
     plan_block = ""
     if inp.response_plan_dict:
         plan_block = "RESPONSE PLAN:\n"
-        for k, v in inp.response_plan_dict.items():
-            if isinstance(v, list):
-                plan_block += f"  {k.title()}: {', '.join(v)}\n"
-            else:
-                plan_block += f"  {k.title()}: {v}\n"
+        for k in ["goal", "workflow", "response_structure", "steps", "reasoning", "recommendations"]:
+            v = inp.response_plan_dict.get(k)
+            if v:
+                if isinstance(v, list):
+                    plan_block += f"  {k.replace('_', ' ').title()}: {', '.join(v)}\n"
+                else:
+                    plan_block += f"  {k.replace('_', ' ').title()}: {v}\n"
+
+    # --- Intent-Specific Logic (Summarization/Profile/Credentials) ---
+    intent_guidance = ""
+    if inp.intent == "doc_summarizer":
+        intent_guidance = (
+            "\n[INTENT: SUMMARIZATION]\n"
+            "The user wants an overview. PRIORITIZE article content and main sections. "
+            "Ignore legal footers, navigation links, and generic site meta-data. "
+            "Identify the CORE TOPIC and 3-5 KEY TAKEAWAYS from the retrieved text."
+        )
+    elif inp.intent == "profile_lookup":
+        intent_guidance = (
+            "\n[INTENT: PROFILE LOOKUP]\n"
+            "Focus on identifying the person, their role, and their department. "
+            "Extract contact details if available. Do NOT guess credentials if they are not listed. "
+            "Always include the source URL or document name in the response."
+        )
+    elif inp.intent == "credential_query":
+        intent_guidance = (
+            "\n[INTENT: CREDENTIAL QUERY]\n"
+            "Extract Work Experience, Education, and Qualifications. "
+            "Use a structured format with bold headings for each section. "
+            "If summarizing a resume, provide a chronological overview of their career. "
+            "Only mention details that are explicitly present in the retrieved documents."
+        )
 
     # --- Layer 1: System Identity ---
     identity_block = (
@@ -639,9 +671,8 @@ def build_prompt(inp: OrchestrationInput) -> OrchestrationOutput:
     confidence_block = ""
     if inp.retrieval_confidence < 0.35:
         confidence_block = (
-            f"RETRIEVAL NOTE: Local retrieval confidence is low ({inp.retrieval_confidence:.0%}). "
-            "Rely on Site Intelligence and external research for grounding. "
-            "Be honest about what is and isn't confirmed."
+            f"[INTERNAL NOTE: Local retrieval confidence is low ({inp.retrieval_confidence:.0%}). "
+            "Rely on Site Intelligence and external research. Do NOT repeat this note to the user.]"
         )
 
     # --- Assemble system prompt ---
@@ -652,6 +683,7 @@ def build_prompt(inp: OrchestrationInput) -> OrchestrationOutput:
         snapshot_block,
         meaning_block,
         workflow_block,
+        intent_guidance,
         confidence_block,
         plan_block,
     ]

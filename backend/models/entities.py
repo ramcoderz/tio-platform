@@ -18,6 +18,7 @@ class Chatbot(Base):
     # Website understanding layer — generated during ingestion
     site_profile: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_permanent: Mapped[bool] = mapped_column(Integer, default=0) # Integer for SQLite bool
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

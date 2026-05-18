@@ -49,6 +49,7 @@ async def get_system_stats(db: AsyncSession = Depends(get_db)):
     error_bots      = await db.scalar(select(func.count(Chatbot.id)).where(Chatbot.status == "error"))
     ingesting_bots  = await db.scalar(select(func.count(Chatbot.id)).where(Chatbot.status == "ingesting"))
 
+    from backend.vectorstore.service import get_stats
     return {
         "users":          user_count or 0,
         "chatbots":       chatbot_count or 0,
@@ -60,6 +61,7 @@ async def get_system_stats(db: AsyncSession = Depends(get_db)):
         "sessions":       session_count or 0,
         "system_status":  "healthy",
         "monitor":        get_stats_snapshot(),
+        "knowledgebase_stats": get_stats(),
     }
 
 
@@ -320,6 +322,13 @@ async def get_ingestion_status(db: AsyncSession = Depends(get_db)):
     return result
 
 
+@router.get("/chatbots/monitor", dependencies=[Depends(ensure_admin)])
+async def get_chatbots_monitor(db: AsyncSession = Depends(get_db)):
+    """Frontend compatibility route for chatbot monitoring."""
+    return await get_ingestion_status(db)
+
+
+
 @router.post("/chatbots/{chatbot_id}/delete", dependencies=[Depends(ensure_admin)])
 async def admin_delete_chatbot(chatbot_id: int, db: AsyncSession = Depends(get_db)):
     """Admin force-delete any chatbot with full vector + file cleanup."""
@@ -329,6 +338,38 @@ async def admin_delete_chatbot(chatbot_id: int, db: AsyncSession = Depends(get_d
         raise HTTPException(status_code=404, detail="Chatbot not found")
     await deep_delete_chatbot(chatbot_id, db)
     return {"status": "deleted", "chatbot_id": chatbot_id}
+
+
+@router.post("/chatbots/{chatbot_id}/toggle-permanent", dependencies=[Depends(ensure_admin)])
+async def toggle_permanent(chatbot_id: int, db: AsyncSession = Depends(get_db)):
+    chatbot = await db.get(Chatbot, chatbot_id)
+    if not chatbot:
+        raise HTTPException(status_code=404, detail="Chatbot not found")
+    chatbot.is_permanent = not chatbot.is_permanent
+    await db.commit()
+    return {"chatbot_id": chatbot_id, "is_permanent": bool(chatbot.is_permanent)}
+
+
+@router.post("/chatbots/{chatbot_id}/rebuild-embeddings", dependencies=[Depends(ensure_admin)])
+async def admin_rebuild_embeddings(chatbot_id: int, db: AsyncSession = Depends(get_db)):
+    from backend.ingestion.worker import ingestion_worker
+    from backend.vectorstore.service import delete_chatbot_vectors
+    
+    chatbot = await db.get(Chatbot, chatbot_id)
+    if not chatbot:
+        raise HTTPException(status_code=404, detail="Chatbot not found")
+        
+    await asyncio.to_thread(delete_chatbot_vectors, chatbot_id)
+    await db.execute(delete(EmbeddingMetadata).where(
+        EmbeddingMetadata.document_id.in_(
+            select(UploadedDocument.id).where(UploadedDocument.chatbot_id == chatbot_id)
+        )
+    ))
+    await db.commit()
+    
+    await ingestion_worker.submit_job(chatbot_id)
+    return {"status": "rebuild_started", "chatbot_id": chatbot_id}
+
 
 
 # ---------------------------------------------------------------------------

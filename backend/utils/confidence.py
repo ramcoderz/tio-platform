@@ -1,4 +1,4 @@
-﻿"""
+"""
 Context Confidence System — determines how confident TiO is at each layer:
 
   - retrieval_confidence: how many grounded chunks were found
@@ -33,7 +33,7 @@ def compute_retrieval_confidence(chunks: list, query: str) -> float:
     Score the retrieval quality based on:
       - Number of chunks returned
       - Average chunk score
-      - Whether any chunks have high individual scores
+      - Whether any chunks have high individual scores (crucial for entities)
     """
     if not chunks:
         return 0.0
@@ -42,12 +42,20 @@ def compute_retrieval_confidence(chunks: list, query: str) -> float:
     avg_score = sum(getattr(c, "score", 0.5) for c in chunks) / n
     top_score = max(getattr(c, "score", 0.5) for c in chunks)
 
-    # Normalise: 5+ chunks with avg score > 0.3 = high confidence
-    chunk_factor = min(n / 5.0, 1.0)          # 0–1 based on chunk count
-    score_factor = min(avg_score / 0.5, 1.0)  # 0–1 based on avg score
-    top_factor = min(top_score / 0.4, 1.0)    # 0–1 based on top score
+    # Reward high top_score (exact entity match) even if n is small
+    # If top_score > 0.7, we likely found the exact answer
+    chunk_factor = min(n / 3.0, 1.0)          # 0–1 based on chunk count (lowered from 5)
+    score_factor = min(avg_score / 0.45, 1.0) # 0–1 based on avg score
+    top_factor = min(top_score / 0.5, 1.0)    # 0–1 based on top score
 
-    confidence = (chunk_factor * 0.4) + (score_factor * 0.3) + (top_factor * 0.3)
+    confidence = (chunk_factor * 0.3) + (score_factor * 0.3) + (top_factor * 0.4)
+    
+    # Critical boost: If we have an exact entity match (reranker or RRF top score high)
+    if top_score > 0.75:
+        confidence = max(confidence, 0.8)
+    elif top_score > 0.6:
+        confidence = max(confidence, 0.6)
+
     return round(min(confidence, 1.0), 3)
 
 
@@ -83,8 +91,8 @@ def compute_intent_confidence(intent: str, keyword_score: int, semantic_score: f
     if not intent or intent == "general_chat":
         return 0.3
 
-    keyword_factor = min(keyword_score / 3.0, 1.0) * 0.4
-    semantic_factor = min(semantic_score / 0.6, 1.0) * 0.6
+    keyword_factor = min(keyword_score / 2.0, 1.0) * 0.4 # Lowered requirement
+    semantic_factor = min(semantic_score / 0.55, 1.0) * 0.6 # Lowered requirement
 
     confidence = keyword_factor + semantic_factor
     return round(min(confidence, 1.0), 3)
@@ -107,20 +115,21 @@ def build_confidence_report(
     i_conf = compute_intent_confidence(intent, keyword_score, semantic_score)
 
     # Weighted overall (retrieval matters most)
-    overall = (r_conf * 0.5) + (d_conf * 0.25) + (i_conf * 0.25)
+    overall = (r_conf * 0.6) + (d_conf * 0.2) + (i_conf * 0.2)
     overall = round(overall, 3)
 
     # Decision thresholds
-    should_infer = overall >= 0.45
-    should_ask = overall < 0.25 and len(query.split()) < 5
+    # Increased should_infer threshold for grounding safety (Part 6)
+    should_infer = overall >= 0.40 
+    should_ask = overall < 0.20 and len(query.split()) < 5
 
     fallback_reason = ""
     if r_conf < 0.2:
-        fallback_reason = "Insufficient grounding in indexed content"
+        fallback_reason = "I couldn't find specific details in the site's indexed content"
     elif d_conf < 0.3:
-        fallback_reason = "Domain of the site is unclear"
+        fallback_reason = "The topic seems outside of the site's primary focus"
     elif i_conf < 0.3:
-        fallback_reason = "User intent is ambiguous"
+        fallback_reason = "Your request was a bit ambiguous for the available context"
 
     report = ConfidenceReport(
         retrieval_confidence=r_conf,
@@ -132,28 +141,26 @@ def build_confidence_report(
         fallback_reason=fallback_reason,
     )
 
-    logger.debug(
-        f"[CONFIDENCE] retrieval={r_conf} domain={d_conf} intent={i_conf} "
-        f"overall={overall} infer={should_infer} ask={should_ask}"
-    )
     return report
 
 
 def build_fallback_message(report: ConfidenceReport, domain: str) -> str:
     """Return a graceful fallback message when confidence is too low."""
     domain_hints = {
-        "tourism": "attractions, itineraries, hotels, or local activities",
-        "education": "courses, admissions, scholarships, or campus information",
-        "medical": "departments, appointments, specialists, or healthcare services",
-        "developer": "API authentication, endpoints, SDKs, or integrations",
-        "ecommerce": "products, pricing, orders, or return policies",
-        "general": "the topics covered on this site",
+        "tourism": "attractions, itineraries, or local activities",
+        "education": "courses, admissions, scholarships, or campus details",
+        "medical": "departments, specialists, or healthcare services",
+        "developer": "API endpoints, SDKs, or integration guides",
+        "ecommerce": "products, pricing, or order information",
+        "general": "the information available on this site",
     }
-    hint = domain_hints.get(domain, "the topics covered on this site")
-    reason = report.fallback_reason or "the indexed content doesn't clearly cover this topic"
+    hint = domain_hints.get(domain, "the information available on this site")
+    
+    if report.retrieval_confidence == 0:
+        return f"I'm sorry, but I couldn't find any information about that in the current site index. I can help you with {hint} — what else would you like to know?"
 
     return (
-        f"I wasn't able to find specific information on that — {reason}. "
-        f"I can help you with {hint}. What would you like to know?"
+        f"I'm not quite sure about that because {report.fallback_reason.lower()}. "
+        f"However, I can help you with {hint}. Could you try rephrasing or asking something related?"
     )
 

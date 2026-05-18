@@ -22,6 +22,15 @@ class ResponseSanitizer:
         r"thank you for asking",
         r"let me help you with that",
         r"here is the information i found",
+        r"based on available data",
+        r"may not be exhaustive",
+        r"confidence low",
+        r"external research triggered",
+        r"fallback triggered",
+        r"using external search",
+        r"orchestration reasoning",
+        r"fallback reasoning",
+        r"please let me know how i can assist",
     ]
 
     def __init__(self):

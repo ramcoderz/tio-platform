@@ -36,8 +36,8 @@ TiO is built on a modern, scalable stack designed for reliability and speed:
 
 1. **Clone the Repository**
    ```bash
-   git clone https://github.com/your-username/tio.git
-   cd tio
+   git clone https://github.com/ramcoderz/tio-platform.git
+   cd tio-platform
    ```
 
 2. **Backend Setup**

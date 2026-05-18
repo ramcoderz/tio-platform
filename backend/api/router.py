@@ -104,7 +104,10 @@ async def list_chatbots(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
-    stmt = select(Chatbot).where(Chatbot.user_id == user.id).order_by(Chatbot.created_at.desc())
+    from sqlalchemy import or_
+    stmt = select(Chatbot).where(
+        or_(Chatbot.user_id == user.id, Chatbot.is_permanent == 1)
+    ).order_by(Chatbot.created_at.desc())
     result = await db.execute(stmt)
     return result.scalars().all()
 
@@ -152,6 +155,8 @@ async def delete_chatbot(
     chatbot = await db.get(Chatbot, chatbot_id)
     if not chatbot or chatbot.user_id != user.id:
         raise HTTPException(status_code=404, detail="Chatbot not found or access denied")
+    if chatbot.is_permanent and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Cannot delete a permanent knowledgebase")
     await deep_delete_chatbot(chatbot_id, db)
     return {"status": "deleted", "chatbot_id": chatbot_id}
 
@@ -199,6 +204,8 @@ async def upload_document(
     chatbot = await db.get(Chatbot, chatbot_id)
     if not chatbot or chatbot.user_id != user.id:
         raise HTTPException(status_code=404, detail="Chatbot not found or access denied")
+    if chatbot.is_permanent and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Cannot upload to a permanent knowledgebase")
     return await ingest_file(chatbot_id, file, db)
 
 
@@ -244,6 +251,8 @@ async def delete_chatbot_file(
     chatbot = await db.get(Chatbot, chatbot_id)
     if not chatbot or chatbot.user_id != user.id:
         raise HTTPException(status_code=404, detail="Chatbot not found or access denied")
+    if chatbot.is_permanent and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Cannot modify a permanent knowledgebase")
         
     doc = await db.get(UploadedDocument, doc_id)
     if not doc:
@@ -293,6 +302,8 @@ async def reingest_chatbot(
     chatbot = await db.get(Chatbot, chatbot_id)
     if not chatbot or chatbot.user_id != user.id:
         raise HTTPException(status_code=404, detail="Chatbot not found or access denied")
+    if chatbot.is_permanent and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Cannot re-ingest a permanent knowledgebase")
     if not chatbot.website_url:
         raise HTTPException(status_code=400, detail="Chatbot has no website URL to re-ingest")
 
@@ -398,7 +409,8 @@ async def clear_chat_history(
 @api_router.get("/chat/export/{session_id}")
 async def export_chat(
     session_id: str,
-    format: str = Query("md", enum=["md", "pdf", "docx"]),
+    chatbot_id: int = Query(...),
+    format: str = Query("md", enum=["md", "json", "pdf", "docx"]),
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user)
 ):
@@ -410,6 +422,7 @@ async def export_chat(
 
     stmt = select(Conversation).where(
         Conversation.session_id == session_id,
+        Conversation.chatbot_id == chatbot_id,
         Conversation.user_id == user.id
     )
     conv = (await db.execute(stmt)).scalars().first()
@@ -424,6 +437,11 @@ async def export_chat(
         content = ExportService.to_markdown(messages, session_id)
         headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
         return Response(content=content, media_type="text/markdown", headers=headers)
+    elif format == "json":
+        import json
+        content = json.dumps(messages, indent=2)
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        return Response(content=content, media_type="application/json", headers=headers)
     elif format == "pdf":
         content = ExportService.to_pdf(messages, session_id)
         headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
@@ -623,3 +641,30 @@ async def set_config(payload: dict, db: AsyncSession = Depends(get_db)):
 async def get_monitoring_stats():
     from backend.utils.monitoring import get_stats_snapshot
     return get_stats_snapshot()
+
+
+@api_router.get("/admin/runtime")
+async def get_runtime_status():
+    from backend.utils.validation import (
+        validate_frontend, validate_backend, validate_worker,
+        validate_crawler, validate_embeddings, validate_vectorstore,
+        validate_llm, validate_websocket
+    )
+    fe = await validate_frontend()
+    be = await validate_backend()
+    wrk = await validate_worker()
+    crwl = await validate_crawler()
+    emb = await validate_embeddings()
+    vs = await validate_vectorstore()
+    llm = await validate_llm()
+    ws = await validate_websocket()
+    return {
+        "frontend": fe,
+        "backend": be,
+        "worker": wrk,
+        "crawler": crwl,
+        "embeddings": emb,
+        "llm": llm["status"],
+        "vectorstore": vs["status"],
+        "websocket": ws
+    }

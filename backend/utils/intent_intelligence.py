@@ -26,6 +26,8 @@ SKILL_DESCRIPTIONS = {
     "sdk_guide": "install libraries, npm, pip, sdk initialization, package usage",
     "shopping_guide": "product comparison, buy items, pricing, shopping advice, retail catalog",
     "doc_summarizer": "summarize documents, key highlights, overview of content, tell me about this",
+    "profile_lookup": "find faculty information, who is the professor, hod details, staff bio, dean profile, contact details",
+    "credential_query": "work experience, professional background, qualifications, academic degrees, certifications, career history, resume details, cv content",
 }
 
 class IntentIntelligence:
@@ -94,6 +96,11 @@ class IntentIntelligence:
             "wait times": "queue time",
             "where to go": "attractions",
             "must visit": "top attractions",
+            "hod": "head of department",
+            "dean": "faculty head",
+            "principal": "institution head",
+            "work history": "professional experience",
+            "background": "qualifications and career",
         }
         q = query.lower()
         for old, new in synonyms.items():

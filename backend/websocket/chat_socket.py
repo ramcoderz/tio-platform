@@ -21,6 +21,7 @@ from backend.config.settings import get_settings
 from sqlalchemy import select
 import json
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 from backend.utils.console import console
@@ -40,6 +41,19 @@ def _extract_user_id_from_token(token: str | None) -> int | None:
         return None
 
 
+import asyncio
+
+async def _heartbeat(websocket: WebSocket, interval: int = 30):
+    """Periodically send pings to keep connection alive and detect dead sockets."""
+    try:
+        from backend.api.websocket_manager import manager
+        while True:
+            await asyncio.sleep(interval)
+            await manager.safe_send_json(websocket, {"type": "ping"})
+    except Exception:
+        # If ping fails, the socket is likely dead; main loop will exit on receive
+        pass
+
 @websocket_router.websocket("/ws/chat/{session_id}")
 @websocket_router.websocket("/ws/{session_id}")
 async def chat_socket(
@@ -47,166 +61,149 @@ async def chat_socket(
     session_id: str,
     token: str | None = Query(default=None),
 ):
+    t_ws_start = time.monotonic()
     await websocket.accept()
-    console.info(f"Websocket connected: {session_id}")
+    if settings.debug_timing:
+        print(f"[WS] Stream established in {time.monotonic() - t_ws_start:.3f}s")
+    logger.info(f"[WS] Socket opened: session_id={session_id}")
+    console.info(f"[WS] Connected: {session_id}")
 
     # In-memory state for this socket connection
     history: list[dict] = []
-    locked_chatbot_id: int | None = None   # locked after first message
+    locked_chatbot_id: int | None = None
     user_id = _extract_user_id_from_token(token)
+    
+    # Heartbeat task
+    heartbeat_task = asyncio.create_task(_heartbeat(websocket))
 
     try:
+        from backend.api.websocket_manager import manager
         while True:
-            raw_data = await websocket.receive_text()
             try:
+                raw_data = await websocket.receive_text()
                 data = json.loads(raw_data)
+            except WebSocketDisconnect:
+                logger.info(f"[WS] Socket disconnected (normal): session_id={session_id}")
+                raise
             except json.JSONDecodeError:
-                await websocket.send_json({"type": "error", "content": "Invalid JSON payload."})
+                logger.warning(f"[WS] Invalid JSON payload from session_id={session_id}")
+                await manager.safe_send_json(websocket, {"type": "error", "content": "Invalid payload: Not valid JSON."})
+                continue
+            except Exception as e:
+                logger.warning(f"[WS] Connection error or invalid state from session_id={session_id}: {e}")
+                break
+
+            # Heartbeat ping/pong handling
+            if data.get("type") == "ping":
+                await manager.safe_send_json(websocket, {"type": "pong"})
+                continue
+            if data.get("type") == "pong":
                 continue
 
             message = sanitize_input(data.get("message", "").strip())
-            if not message:
-                continue
+            if not message: continue
 
-            # Accept token from payload as fallback
+            t_total_start = time.monotonic()
+
             if not user_id and data.get("token"):
                 user_id = _extract_user_id_from_token(data["token"])
 
-            # Security: block prompt injection attempts
-            if "[SECURITY ALERT]" in message:
-                console.critical(f"Security Alert: Blocked prompt injection attempt from {session_id}")
-                await websocket.send_json({"type": "error", "content": "Message rejected for security reasons."})
-                continue
-
-            # --- STRICT CHATBOT LOCKING ---
-            # The first message MUST supply chatbot_id.
-            # After that, the socket is locked to that chatbot_id.
+            # --- CHATBOT LOCKING ---
             incoming_chatbot_id = data.get("chatbot_id")
             if locked_chatbot_id is None:
                 if not incoming_chatbot_id:
-                    await websocket.send_json({
-                        "type": "error",
-                        "content": "chatbot_id is required on the first message."
-                    })
+                    logger.error(f"[WS] Connection attempt without chatbot_id: session_id={session_id}")
+                    await manager.safe_send_json(websocket, {"type": "error", "content": "chatbot_id required."})
                     continue
                 locked_chatbot_id = incoming_chatbot_id
-                # Register with manager
-                from backend.api.websocket_manager import manager
-                # Note: manager.connect usually calls accept(), but we already did it
-                if locked_chatbot_id not in manager.active_connections:
-                    manager.active_connections[locked_chatbot_id] = set()
-                manager.active_connections[locked_chatbot_id].add(websocket)
-                
-                console.info(f"Session locked to chatbot_id={locked_chatbot_id}", stage="WS")
+                await manager.register(websocket, session_id, locked_chatbot_id)
+                logger.info(f"[WS] Session {session_id} locked to chatbot_id={locked_chatbot_id}")
+                console.info(f"[WS] Session locked to chatbot_id={locked_chatbot_id}")
             elif incoming_chatbot_id and incoming_chatbot_id != locked_chatbot_id:
-                console.critical(
-                    f"Cross-session contamination attempt blocked!\n"
-                    f"       Session: {session_id}\n"
-                    f"       Locked to: {locked_chatbot_id}\n"
-                    f"       Attempted: {incoming_chatbot_id}"
-                )
-                await websocket.send_json({
-                    "type": "error",
-                    "content": "Session is already bound to a different chatbot. Start a new session to switch."
-                })
+                logger.error(f"[WS] Chatbot ID mismatch: session={session_id} locked={locked_chatbot_id} incoming={incoming_chatbot_id}")
+                await manager.safe_send_json(websocket, {"type": "error", "content": "Session mismatch."})
                 continue
 
             async with SessionLocal() as db:
-                # Get or create conversation — strictly scoped to session_id + chatbot_id
-                conv = await get_or_create_conversation(
-                    db, session_id, locked_chatbot_id, user_id=user_id
-                )
-
+                conv = await get_or_create_conversation(db, session_id, locked_chatbot_id, user_id=user_id)
                 if not conv:
-                    await websocket.send_json({
-                        "type": "error",
-                        "content": "Could not create or find conversation."
-                    })
+                    await manager.safe_send_json(websocket, {"type": "error", "content": "Conversation failure."})
                     continue
 
-                # Validate chatbot exists and belongs to user
                 chatbot = await db.get(Chatbot, locked_chatbot_id)
                 if not chatbot or (chatbot.user_id and chatbot.user_id != user_id):
-                    await websocket.send_json({
-                        "type": "error",
-                        "content": f"Chatbot {locked_chatbot_id} not found or access denied."
-                    })
-                    locked_chatbot_id = None # Reset lock
+                    await manager.safe_send_json(websocket, {"type": "error", "content": "Access denied."})
                     continue
 
-                # Load history from DB on first message only
                 if not history:
                     history = await get_all_history(db, conv.id)
-                    logger.debug(f"[WS] Loaded {len(history)} history messages for session={session_id}")
 
-                # Persist user message
                 await add_message(db, conv.id, "user", message)
                 history.append({"role": "user", "content": message})
 
+                if message == "/system/runtime":
+                    from backend.utils.validation import get_runtime_status_report
+                    status_report = await get_runtime_status_report()
+                    
+                    # Stream lines one by one to simulate typing/streaming output
+                    for line in status_report.split("\n"):
+                        await manager.safe_send_json(websocket, {"type": "token", "content": line + "\n"})
+                        await asyncio.sleep(0.01)
+                    
+                    await add_message(db, conv.id, "assistant", status_report)
+                    history.append({"role": "assistant", "content": status_report})
+                    
+                    await manager.safe_send_json(websocket, {
+                        "type": "final",
+                        "answer": status_report,
+                        "citations": [],
+                        "duration_s": 0.05,
+                    })
+                    continue
+
                 full_answer = ""
                 citations = []
-                confidence = 0.0
-                goal_text = None
-                conversation_mode = "exploratory"
-
+                
                 try:
                     async for chunk_data in run_orchestration_stream(
                         message, history, db,
                         chatbot_id=locked_chatbot_id,
                         session_id=session_id,
                     ):
-                        ctype = chunk_data.get("type")
-
-                        if ctype == "metadata":
+                        if chunk_data.get("type") == "token":
+                            full_answer += chunk_data.get("content", "")
+                        elif chunk_data.get("type") == "metadata":
                             citations = chunk_data.get("citations", [])
-                            confidence = chunk_data.get("confidence", 0.0)
-                            goal_text = chunk_data.get("goal")
-                            conversation_mode = chunk_data.get("conversation_mode", "exploratory")
-                            await websocket.send_json(chunk_data)
-
-                        elif ctype == "token":
-                            content = chunk_data.get("content", "")
-                            full_answer += content
-                            await websocket.send_json({"type": "token", "content": content})
-
-                        elif ctype == "thought":
-                            await websocket.send_json(chunk_data)
-
-                        elif ctype == "error":
-                            await websocket.send_json(chunk_data)
-                            break
+                        
+                        await manager.safe_send_json(websocket, chunk_data)
 
                 except Exception as e:
-                    logger.error(f"[WS] Orchestration error session={session_id}: {e}", exc_info=True)
-                    await websocket.send_json({"type": "error", "content": "Internal error during response generation."})
+                    logger.error(f"[WS] Orchestration error: {e}")
+                    await manager.safe_send_json(websocket, {"type": "error", "content": "Generation failed."})
                     break
 
-                # Persist assistant message
                 if full_answer:
-                    await add_message(db, conv.id, "assistant", full_answer, citations, confidence)
+                    await add_message(db, conv.id, "assistant", full_answer, citations)
                     history.append({"role": "assistant", "content": full_answer})
 
-            # Send final signal
-            await websocket.send_json({
-                "type": "final",
-                "answer": full_answer,
-                "citations": citations,
-                "confidence": confidence,
-                "goal": goal_text,
-                "conversation_mode": conversation_mode,
-            })
+                total_duration = time.monotonic() - t_total_start
+                if settings.debug_timing:
+                    print(f"[TOTAL] Response generated in {total_duration:.3f}s")
+
+                await manager.safe_send_json(websocket, {
+                    "type": "final",
+                    "answer": full_answer,
+                    "citations": citations,
+                    "duration_s": round(total_duration, 2),
+                })
 
     except WebSocketDisconnect:
-        console.warning(f"Websocket disconnected: {session_id}")
-        if locked_chatbot_id:
-            from backend.api.websocket_manager import manager
-            manager.disconnect(websocket, locked_chatbot_id)
-        # Clean up in-memory goal state on disconnect
-        clear_goal(session_id, locked_chatbot_id)
-
+        console.warning(f"[WS] Disconnected: {session_id}")
     except Exception as e:
-        logger.error(f"[WS] Unhandled error session={session_id}: {e}", exc_info=True)
-        if locked_chatbot_id:
-            from backend.api.websocket_manager import manager
-            manager.disconnect(websocket, locked_chatbot_id)
+        logger.error(f"[WS] Socket error in session {session_id}: {e}")
+    finally:
+        logger.info(f"[WS] Socket closed: session_id={session_id}")
+        heartbeat_task.cancel()
+        from backend.api.websocket_manager import manager
+        manager.disconnect_socket(websocket)
         clear_goal(session_id, locked_chatbot_id)

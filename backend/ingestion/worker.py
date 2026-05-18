@@ -20,6 +20,35 @@ class IngestionWorker:
             return
         self._worker_task = asyncio.create_task(self._run())
         logger.info("[WORKER] Ingestion worker initialized and running.")
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def _heartbeat_loop(self):
+        """Continuous heartbeat and auto-recovery loop."""
+        while True:
+            try:
+                await asyncio.sleep(20)
+                # Heartbeat logging
+                print(flush=True)
+                print("========================================================", flush=True)
+                print("[WORKER]", flush=True)
+                print("Ingestion worker heartbeat OK", flush=True)
+                print("========================================================", flush=True)
+                print(flush=True)
+
+                # Auto-recovery if processor task died
+                if self._worker_task is None or self._worker_task.done():
+                    print("========================================================", flush=True)
+                    print("[FATAL]", flush=True)
+                    print("Ingestion worker disconnected", flush=True)
+                    print("========================================================", flush=True)
+                    print("[SYSTEM] Attempting auto-recovery of background worker...", flush=True)
+                    self._worker_task = asyncio.create_task(self._run())
+                    print("[SYSTEM] Background worker recovered and active.", flush=True)
+                    print(flush=True)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"[WORKER] Heartbeat/auto-recovery error: {e}")
 
     async def submit_job(self, chatbot_id: int):
         """Submit a new ingestion job to the queue and persist its initial state."""
