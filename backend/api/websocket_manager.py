@@ -19,6 +19,11 @@ class WebSocketManager:
 
     async def register(self, websocket: WebSocket, session_id: str, chatbot_id: int):
         """Register a new connection, closing any existing connection for the same session."""
+        try:
+            chatbot_id = int(chatbot_id)
+        except (ValueError, TypeError):
+            pass
+
         # 1. Single socket per session: close existing socket for this session if it exists
         if session_id in self.active_sessions:
             old_socket = self.active_sessions[session_id]
@@ -45,6 +50,12 @@ class WebSocketManager:
         """Fully clean up all tracking maps for a disconnected socket."""
         session_id = self.socket_sessions.pop(websocket, None)
         chatbot_id = self.socket_chatbots.pop(websocket, None)
+
+        if chatbot_id is not None:
+            try:
+                chatbot_id = int(chatbot_id)
+            except (ValueError, TypeError):
+                pass
 
         if session_id and self.active_sessions.get(session_id) == websocket:
             self.active_sessions.pop(session_id, None)
@@ -80,6 +91,11 @@ class WebSocketManager:
 
     async def broadcast_to_chatbot(self, chatbot_id: int, message: str | dict):
         """Send a message to all active connections for a specific chatbot safely."""
+        try:
+            chatbot_id = int(chatbot_id)
+        except (ValueError, TypeError):
+            pass
+
         if chatbot_id not in self.active_connections:
             return
 
