@@ -36,6 +36,8 @@ async def build_site_profile(all_text: str, domain: str, site_url: str, existing
     
     try:
         summary = await ollama_client.generate(summary_prompt, model=settings.ollama_model)
+        if not summary or summary.startswith("[SYSTEM]") or summary.startswith("[ERROR]"):
+            summary = f"A website focused on {domain} located at {site_url}."
     except Exception as e:
         logger.warning(f"[SITE INTEL] Summary generation failed: {e}")
         summary = f"A website focused on {domain} located at {site_url}."
