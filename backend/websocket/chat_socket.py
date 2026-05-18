@@ -100,14 +100,6 @@ async def chat_socket(
             if data.get("type") == "pong":
                 continue
 
-            message = sanitize_input(data.get("message", "").strip())
-            if not message: continue
-
-            t_total_start = time.monotonic()
-
-            if not user_id and data.get("token"):
-                user_id = _extract_user_id_from_token(data["token"])
-
             # --- CHATBOT LOCKING ---
             incoming_chatbot_id = data.get("chatbot_id")
             if locked_chatbot_id is None:
@@ -123,6 +115,15 @@ async def chat_socket(
                 logger.error(f"[WS] Chatbot ID mismatch: session={session_id} locked={locked_chatbot_id} incoming={incoming_chatbot_id}")
                 await manager.safe_send_json(websocket, {"type": "error", "content": "Session mismatch."})
                 continue
+
+            message = sanitize_input(data.get("message", "").strip())
+            if not message:
+                continue
+
+            t_total_start = time.monotonic()
+
+            if not user_id and data.get("token"):
+                user_id = _extract_user_id_from_token(data["token"])
 
             async with SessionLocal() as db:
                 conv = await get_or_create_conversation(db, session_id, locked_chatbot_id, user_id=user_id)
