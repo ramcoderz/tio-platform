@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Globe, Upload, ArrowRight, Loader2, CheckCircle2,
   FileText, X, Zap, Brain, Database, Search, Layers,
-  AlertCircle, ChevronRight
+  AlertCircle, ChevronRight, Terminal
 } from 'lucide-react';
 import { api } from '../api';
 import { config } from '../config';
